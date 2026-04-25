@@ -1,0 +1,16 @@
+[package]
+name = "codesmith-wiki"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+codesmith-core = { path = "../core" }
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

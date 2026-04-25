@@ -1,0 +1,26 @@
+[package]
+name = "codesmith-cli"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "codesmith-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+codesmith-agent = { path = "../agent" }
+codesmith-core = { path = "../core" }
+codesmith-llm = { path = "../llm" }
+codesmith-policy = { path = "../policy" }
+codesmith-runner = { path = "../runner" }
+codesmith-storage = { path = "../storage" }
+codesmith-wiki = { path = "../wiki" }
+dirs.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
