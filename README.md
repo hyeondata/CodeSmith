@@ -1,9 +1,9 @@
 # CodeSmith
 
-CodeSmith is an execution-only local desktop agent built with Rust and `egui`.
+CodeSmith is an execution-only local agent built with Rust, a CLI-first runtime, and a frozen `egui` desktop shell.
 It connects to a local OpenAI-compatible LLM server, proposes shell commands, and runs only commands that the user explicitly approves.
 
-The current v1 scope is intentionally narrow: local chat, command proposals, command approval, command execution logs, local wiki search, settings, and persistence. It does not edit files automatically, commit or push Git changes, open PRs, run MCP tools, or execute remotely.
+The current v1.1 direction is intentionally narrow: local CLI chat, command proposals, command approval, command execution logs, local wiki ingest/query/lint, settings, and persistence. It does not edit files automatically, commit or push Git changes, open PRs, run MCP tools, or execute remotely.
 
 ## Features
 
@@ -15,7 +15,7 @@ The current v1 scope is intentionally narrow: local chat, command proposals, com
 - Policy blocking for destructive, privileged, credential, exfiltration, and out-of-workspace commands.
 - Streaming stdout/stderr, exit status, timeout handling, and run logs.
 - Local settings, SQLite metadata, JSONL transcripts, and Markdown wiki pages.
-- Interactive CLI mode with workspace trust, slash commands, recommended prompts, and `@` context helpers.
+- Interactive CLI mode with workspace trust, slash commands, recommended prompts, `@` context helpers, and CLI-first wiki ingest/query/lint/log commands.
 - Korean/CJK font fallback in the GUI.
 
 ## Requirements
@@ -85,6 +85,12 @@ Interactive commands:
 /set api-key <key|none>
 /set workspace <path>
 /set timeout <seconds>
+/ingest file <path>
+/ingest folder <path>
+/query <question>
+/lint wiki
+/log recent
+/sources
 /doctor
 /wiki list
 /wiki search <query>
@@ -136,6 +142,17 @@ cargo run -p codesmith-cli -- wiki list
 cargo run -p codesmith-cli -- wiki search hello
 ```
 
+Ingest trusted workspace sources into the local wiki:
+
+```bash
+cargo run -p codesmith-cli -- ingest file Cargo.toml
+cargo run -p codesmith-cli -- ingest folder crates
+cargo run -p codesmith-cli -- query "cargo workspace"
+cargo run -p codesmith-cli -- lint wiki
+cargo run -p codesmith-cli -- log recent
+cargo run -p codesmith-cli -- sources
+```
+
 ## Safety Model
 
 CodeSmith v1 is execution-only.
@@ -156,9 +173,12 @@ trusted-workspaces.txt        trusted CLI workspace paths
 codesmith.sqlite3             session and command metadata
 sessions/                     JSONL transcripts
 wiki/                         Markdown wiki pages
-raw/                          reserved for future wiki ingest
-index/                        reserved for future wiki index
-logs/                         reserved for future operation logs
+raw/                          immutable source snapshots
+schema/                       wiki schema and policy notes
+index.md                      wiki navigation entrypoint
+log.md                        parseable operation log
+index/                        reserved compatibility directory
+logs/                         reserved compatibility directory
 ```
 
 ## Workspace Layout

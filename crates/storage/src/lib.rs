@@ -1,5 +1,7 @@
 use anyhow::Result;
-use codesmith_core::{AppSettings, ChatMessage, CommandRun};
+use codesmith_core::{
+    AppSettings, ChatMessage, CommandRun, IngestJob, SourceRecord, WikiPageMetadata,
+};
 use rusqlite::{Connection, params};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -63,6 +65,21 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS command_runs (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS source_records (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ingest_jobs (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS wiki_page_metadata (
+                id TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -138,17 +155,79 @@ impl Storage {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    pub fn insert_source_record(&self, source: &SourceRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO source_records (id, payload, created_at) VALUES (?1, ?2, ?3)",
+            params![
+                source.id.to_string(),
+                serde_json::to_string(source)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_source_records(&self) -> Result<Vec<SourceRecord>> {
+        self.list_payloads("source_records")
+    }
+
+    pub fn insert_ingest_job(&self, job: &IngestJob) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO ingest_jobs (id, payload, created_at) VALUES (?1, ?2, ?3)",
+            params![
+                job.id.to_string(),
+                serde_json::to_string(job)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_ingest_jobs(&self) -> Result<Vec<IngestJob>> {
+        self.list_payloads("ingest_jobs")
+    }
+
+    pub fn insert_wiki_page_metadata(&self, page: &WikiPageMetadata) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO wiki_page_metadata (id, payload, created_at) VALUES (?1, ?2, ?3)",
+            params![
+                page.id.to_string(),
+                serde_json::to_string(page)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_wiki_page_metadata(&self) -> Result<Vec<WikiPageMetadata>> {
+        self.list_payloads("wiki_page_metadata")
+    }
+
     fn transcript_path(&self, session_id: Uuid) -> PathBuf {
         self.root
             .join("sessions")
             .join(format!("{session_id}.jsonl"))
+    }
+
+    fn list_payloads<T: serde::de::DeserializeOwned>(&self, table: &str) -> Result<Vec<T>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT payload FROM {table} ORDER BY created_at ASC"
+        ))?;
+        let rows = stmt.query_map([], |row| {
+            let payload: String = row.get(0)?;
+            Ok(serde_json::from_str(&payload).expect("stored payload should parse"))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codesmith_core::{ChatMessage, ChatRole, CommandProposal, CommandRun, CommandStatus};
+    use codesmith_core::{
+        ChatMessage, ChatRole, CommandProposal, CommandRun, CommandStatus, IngestJob, SourceRecord,
+        SourceStatus, WikiPageMetadata, WikiStatus,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -201,5 +280,44 @@ mod tests {
         assert_eq!(transcript.len(), 1);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].stdout, "hello\n");
+    }
+
+    #[test]
+    fn stores_cli_first_wiki_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Storage::open(dir.path()).expect("open storage");
+        let source = SourceRecord {
+            id: uuid::Uuid::new_v4(),
+            path: PathBuf::from("/tmp/project/notes.md"),
+            hash: "abc123".to_string(),
+            kind: "md".to_string(),
+            ingested_at: chrono::Utc::now(),
+            status: SourceStatus::Active,
+        };
+        let job = IngestJob {
+            id: uuid::Uuid::new_v4(),
+            source_id: source.id,
+            status: SourceStatus::Active,
+            analysis_path: Some(PathBuf::from("raw/analysis.md")),
+            error: None,
+        };
+        let page = WikiPageMetadata {
+            id: uuid::Uuid::new_v4(),
+            title: "Source: notes.md".to_string(),
+            path: PathBuf::from("wiki/source-notes.md"),
+            sources: vec![source.id],
+            updated_at: chrono::Utc::now(),
+            status: WikiStatus::Active,
+        };
+
+        store.insert_source_record(&source).expect("insert source");
+        store.insert_ingest_job(&job).expect("insert job");
+        store
+            .insert_wiki_page_metadata(&page)
+            .expect("insert page metadata");
+
+        assert_eq!(store.list_source_records().expect("sources"), vec![source]);
+        assert_eq!(store.list_ingest_jobs().expect("jobs"), vec![job]);
+        assert_eq!(store.list_wiki_page_metadata().expect("pages"), vec![page]);
     }
 }

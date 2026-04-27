@@ -756,6 +756,7 @@ dependencies = [
  "dirs",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -810,6 +811,7 @@ dependencies = [
  "codesmith-core",
  "dirs",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "toml",

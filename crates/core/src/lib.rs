@@ -165,6 +165,42 @@ pub struct WikiPage {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceStatus {
+    Active,
+    Skipped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRecord {
+    pub id: Uuid,
+    pub path: PathBuf,
+    pub hash: String,
+    pub kind: String,
+    pub ingested_at: DateTime<Utc>,
+    pub status: SourceStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IngestJob {
+    pub id: Uuid,
+    pub source_id: Uuid,
+    pub status: SourceStatus,
+    pub analysis_path: Option<PathBuf>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikiPageMetadata {
+    pub id: Uuid,
+    pub title: String,
+    pub path: PathBuf,
+    pub sources: Vec<Uuid>,
+    pub updated_at: DateTime<Utc>,
+    pub status: WikiStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LlmEvent {
     Token(String),

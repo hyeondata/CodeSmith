@@ -1,11 +1,11 @@
 # CodeSmith v1 Dev Build Notes
 
-CodeSmith is a local-only Rust/egui execution agent. The v1 build connects to an OpenAI-compatible local LLM server, proposes shell commands as JSON, requires explicit approval for every command, streams stdout/stderr into the GUI/CLI, and persists settings, transcripts, command runs, and wiki notes under `~/.codesmith`.
+CodeSmith is a local-only Rust execution agent with a frozen egui shell and a CLI-first runtime. The current build connects to an OpenAI-compatible local LLM server, proposes shell commands as JSON, requires explicit approval for every command, streams stdout/stderr into the GUI/CLI, and persists settings, transcripts, command runs, source records, and wiki notes under `~/.codesmith`.
 
 ## Run
 
 ```bash
-cargo run --release -p codesmith-app
+cargo run -p codesmith-cli -- chat
 ```
 
 Default local LLM settings:
@@ -15,7 +15,13 @@ Default local LLM settings:
 - API key: optional placeholder
 - Settings file: `~/.codesmith/settings.toml`
 
-For Ollama, pull or create the configured model first, then use the app's settings panel to test the connection.
+For Ollama, pull or create the configured model first, then run `cargo run -p codesmith-cli -- doctor` to test the connection.
+
+The GUI remains available for legacy/manual smoke checks:
+
+```bash
+cargo run --release -p codesmith-app
+```
 
 ## CLI
 
@@ -34,12 +40,31 @@ Useful chat commands:
 /set model <name>
 /set base-url <url>
 /doctor
+/ingest file <path>
+/ingest folder <path>
+/query <question>
+/lint wiki
+/log recent
+/sources
 /wiki list
 /wiki search <query>
 /exit
 ```
 
 The CLI requires workspace trust before interactive LLM prompts or command approvals. It also supports `@workspace` and workspace-scoped `@file:<path>` prompt context.
+
+Headless wiki commands:
+
+```bash
+cargo run -p codesmith-cli -- ingest file Cargo.toml
+cargo run -p codesmith-cli -- ingest folder crates
+cargo run -p codesmith-cli -- query "cargo workspace"
+cargo run -p codesmith-cli -- lint wiki
+cargo run -p codesmith-cli -- log recent
+cargo run -p codesmith-cli -- sources
+```
+
+The wiki layout follows the CLI-first local wiki structure: `raw/` snapshots, Markdown pages in `wiki/`, schema notes in `schema/`, `index.md` navigation, and a parseable `log.md`.
 
 ## Command Proposal Format
 

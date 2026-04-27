@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
 use codesmith_agent::{AgentOutput, parse_agent_output};
-use codesmith_core::{AppSettings, ChatMessage, ChatRole, CommandProposal};
+use codesmith_core::{
+    AppSettings, ChatMessage, ChatRole, CommandProposal, IngestJob, SourceStatus,
+};
 use codesmith_llm::OpenAiClient;
 use codesmith_policy::evaluate;
 use codesmith_runner::run_approved_command;
+use codesmith_storage::Storage;
 use codesmith_wiki::WikiStore;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -25,6 +28,12 @@ pub fn repl_help() -> &'static str {
      /set timeout <seconds>    set command timeout\n\
      /prompts                  show recommended prompts\n\
      /doctor                   test local LLM connection\n\
+     /ingest file <path>       snapshot a trusted workspace file into raw/ and wiki\n\
+     /ingest folder <path>     recursively ingest supported source files\n\
+     /query <question>         build local wiki context for a question\n\
+     /lint wiki                check frontmatter, wikilinks, and duplicate titles\n\
+     /log recent               show recent operation log entries\n\
+     /sources                  list ingested source records\n\
      /wiki list                list saved wiki pages\n\
      /wiki search <query>      search local wiki\n\
      /exit                     quit\n"
@@ -38,6 +47,12 @@ pub enum ReplCommand {
     Settings,
     Set(SettingUpdate),
     Doctor,
+    IngestFile(PathBuf),
+    IngestFolder(PathBuf),
+    Query(String),
+    LintWiki,
+    LogRecent,
+    Sources,
     WikiList,
     WikiSearch(String),
     Exit,
@@ -70,6 +85,9 @@ pub fn parse_repl_line(line: &str) -> ReplCommand {
         "/settings" => ReplCommand::Settings,
         "/doctor" => ReplCommand::Doctor,
         "/wiki list" => ReplCommand::WikiList,
+        "/lint wiki" => ReplCommand::LintWiki,
+        "/log recent" => ReplCommand::LogRecent,
+        "/sources" | "/sources list" => ReplCommand::Sources,
         _ => parse_parameterized_repl_command(trimmed),
     }
 }
@@ -138,6 +156,141 @@ pub fn recommended_prompts_output() -> &'static str {
      - Inspect @workspace and propose a read-only diagnostic command.\n\
      - Explain @file:Cargo.toml and list important dependencies.\n\
      - Search the local wiki for prior command patterns before answering.\n"
+}
+
+pub fn ingest_file_output(
+    wiki: &WikiStore,
+    storage: &Storage,
+    workspace: &Path,
+    path: &Path,
+) -> Result<String> {
+    let result = wiki.ingest_file(workspace, path)?;
+    storage.insert_source_record(&result.record)?;
+    storage.insert_ingest_job(&IngestJob {
+        id: uuid::Uuid::new_v4(),
+        source_id: result.record.id,
+        status: if result.skipped {
+            SourceStatus::Skipped
+        } else {
+            SourceStatus::Active
+        },
+        analysis_path: Some(result.raw_path.clone()),
+        error: None,
+    })?;
+    Ok(format!(
+        "Ingest file\npath: {}\nhash: {}\nstatus: {}\n",
+        result.record.path.display(),
+        result.record.hash,
+        if result.skipped {
+            "skipped"
+        } else {
+            "ingested"
+        }
+    ))
+}
+
+pub fn ingest_folder_output(
+    wiki: &WikiStore,
+    storage: &Storage,
+    workspace: &Path,
+    folder: &Path,
+) -> Result<String> {
+    let folder = workspace.join(folder).canonicalize()?;
+    if !folder.starts_with(workspace.canonicalize()?) {
+        anyhow::bail!(
+            "folder path is outside trusted workspace: {}",
+            folder.display()
+        );
+    }
+    let mut ingested = 0;
+    let mut skipped = 0;
+    for file in collect_ingestable_files(&folder)? {
+        match wiki.ingest_file(workspace, &file) {
+            Ok(result) => {
+                storage.insert_source_record(&result.record)?;
+                storage.insert_ingest_job(&IngestJob {
+                    id: uuid::Uuid::new_v4(),
+                    source_id: result.record.id,
+                    status: if result.skipped {
+                        SourceStatus::Skipped
+                    } else {
+                        SourceStatus::Active
+                    },
+                    analysis_path: Some(result.raw_path.clone()),
+                    error: None,
+                })?;
+                if result.skipped {
+                    skipped += 1;
+                } else {
+                    ingested += 1;
+                }
+            }
+            Err(error) if error.to_string().contains("unsupported source file type") => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(format!(
+        "Ingest folder\npath: {}\ningested: {}\nskipped: {}\n",
+        folder.display(),
+        ingested,
+        skipped
+    ))
+}
+
+pub fn query_output(wiki: &WikiStore, query: &str) -> Result<String> {
+    let context = wiki.query_context(query, 4000)?;
+    if context.trim().is_empty() {
+        return Ok(format!("Query context: {query}\nno context\n"));
+    }
+    Ok(format!("Query context: {query}\n{context}\n"))
+}
+
+pub fn lint_wiki_output(wiki: &WikiStore) -> Result<String> {
+    let issues = wiki.lint_wiki()?;
+    if issues.is_empty() {
+        return Ok("Wiki lint\nno issues\n".to_string());
+    }
+    Ok(format!(
+        "Wiki lint\n{}\n",
+        issues
+            .into_iter()
+            .map(|issue| format!(
+                "- {}: {} ({})",
+                issue.kind,
+                issue.message,
+                issue.path.display()
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
+pub fn log_recent_output(root: &Path) -> Result<String> {
+    let path = root.join("log.md");
+    if !path.exists() {
+        return Ok("Recent log\nnone\n".to_string());
+    }
+    let raw = fs::read_to_string(path)?;
+    let lines = raw.lines().rev().take(20).collect::<Vec<_>>();
+    Ok(format!(
+        "Recent log\n{}\n",
+        lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+    ))
+}
+
+pub fn sources_output(storage: &Storage) -> Result<String> {
+    let sources = storage.list_source_records()?;
+    if sources.is_empty() {
+        return Ok("Sources\nnone\n".to_string());
+    }
+    Ok(format!(
+        "Sources\n{}\n",
+        sources
+            .into_iter()
+            .map(|source| format!("- {} {}", source.hash, source.path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
 }
 
 pub fn expand_at_mentions(prompt: &str, workspace: &Path) -> Result<String> {
@@ -326,18 +479,11 @@ pub fn parse_cli_agent_output(input: &str) -> Result<AgentOutput> {
 }
 
 fn wiki_context(prompt: &str, wiki: Option<&WikiStore>) -> Option<String> {
-    let pages = wiki?.search(prompt, 5).ok()?;
-    if pages.is_empty() {
+    let context = wiki?.query_context(prompt, 4000).ok()?;
+    if context.trim().is_empty() {
         return None;
     }
-    Some(format!(
-        "Relevant local wiki pages:\n{}",
-        pages
-            .into_iter()
-            .map(|page| format!("## {}\n{}", page.title, page.body))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    ))
+    Some(format!("Relevant local wiki context:\n{context}"))
 }
 
 fn parse_parameterized_repl_command(trimmed: &str) -> ReplCommand {
@@ -347,6 +493,30 @@ fn parse_parameterized_repl_command(trimmed: &str) -> ReplCommand {
             ReplCommand::Unknown(trimmed.to_string())
         } else {
             ReplCommand::WikiSearch(query.to_string())
+        };
+    }
+    if let Some(path) = trimmed.strip_prefix("/ingest file ") {
+        let path = path.trim();
+        return if path.is_empty() {
+            ReplCommand::Unknown(trimmed.to_string())
+        } else {
+            ReplCommand::IngestFile(PathBuf::from(path))
+        };
+    }
+    if let Some(path) = trimmed.strip_prefix("/ingest folder ") {
+        let path = path.trim();
+        return if path.is_empty() {
+            ReplCommand::Unknown(trimmed.to_string())
+        } else {
+            ReplCommand::IngestFolder(PathBuf::from(path))
+        };
+    }
+    if let Some(question) = trimmed.strip_prefix("/query ") {
+        let question = question.trim();
+        return if question.is_empty() {
+            ReplCommand::Unknown(trimmed.to_string())
+        } else {
+            ReplCommand::Query(question.to_string())
         };
     }
 
@@ -415,6 +585,34 @@ fn expand_file_mention(raw_path: &str, workspace: &Path) -> Result<String> {
         contents.push_str("\n[truncated]");
     }
     Ok(format!("## @file:{}\n```text\n{}\n```", raw_path, contents))
+}
+
+fn collect_ingestable_files(folder: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_ingestable_files_into(folder, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_ingestable_files_into(folder: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let skip_dirs = ["target", ".git", ".worktrees", ".playwright-mcp"];
+    for entry in fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if path.is_dir() {
+            if name.starts_with('.') || skip_dirs.contains(&name) {
+                continue;
+            }
+            collect_ingestable_files_into(&path, files)?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn fenced_json_body(input: &str) -> Option<&str> {
@@ -510,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_messages_omit_wiki_context_without_matches() {
+    fn prompt_messages_include_index_even_without_page_matches() {
         let dir = tempfile::tempdir().expect("tempdir");
         let wiki = codesmith_wiki::WikiStore::open(dir.path()).expect("open wiki");
         wiki.save_page("Command: printf cli-ok", "commands", "stdout cli-ok")
@@ -518,9 +716,12 @@ mod tests {
 
         let messages = build_prompt_messages("unmatched", Some(&wiki));
 
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].role, codesmith_core::ChatRole::User);
-        assert_eq!(messages[0].content, "unmatched");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, codesmith_core::ChatRole::System);
+        assert!(messages[0].content.contains("Relevant local wiki context"));
+        assert!(messages[0].content.contains("# CodeSmith Wiki Index"));
+        assert_eq!(messages[1].role, codesmith_core::ChatRole::User);
+        assert_eq!(messages[1].content, "unmatched");
     }
 
     #[test]
@@ -544,6 +745,21 @@ mod tests {
         assert_eq!(parse_repl_line("/help"), ReplCommand::Help);
         assert_eq!(parse_repl_line("/prompts"), ReplCommand::Prompts);
         assert_eq!(parse_repl_line("/settings"), ReplCommand::Settings);
+        assert_eq!(
+            parse_repl_line("/ingest file Cargo.toml"),
+            ReplCommand::IngestFile(PathBuf::from("Cargo.toml"))
+        );
+        assert_eq!(
+            parse_repl_line("/ingest folder crates"),
+            ReplCommand::IngestFolder(PathBuf::from("crates"))
+        );
+        assert_eq!(
+            parse_repl_line("/query cargo test"),
+            ReplCommand::Query("cargo test".to_string())
+        );
+        assert_eq!(parse_repl_line("/lint wiki"), ReplCommand::LintWiki);
+        assert_eq!(parse_repl_line("/log recent"), ReplCommand::LogRecent);
+        assert_eq!(parse_repl_line("/sources"), ReplCommand::Sources);
         assert_eq!(
             parse_repl_line("/wiki search cu-run-ok"),
             ReplCommand::WikiSearch("cu-run-ok".to_string())

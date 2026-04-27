@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use codesmith_agent::AgentOutput;
 use codesmith_core::{ChatMessage, ChatRole};
 use codesmith_llm::OpenAiClient;
-use codesmith_storage::{load_settings, save_settings, settings_path};
+use codesmith_storage::{Storage, load_settings, save_settings, settings_path};
 use codesmith_wiki::WikiStore;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -24,14 +24,37 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(about = "Start interactive CLI chat")]
     Chat,
+    #[command(about = "Test local LLM connection and settings")]
     Doctor,
+    #[command(about = "Ingest trusted workspace sources into the local wiki")]
+    Ingest {
+        #[command(subcommand)]
+        command: IngestCommand,
+    },
+    #[command(about = "Build local wiki context for a question")]
+    Query { question: String },
+    #[command(about = "Run non-mutating checks")]
+    Lint {
+        #[command(subcommand)]
+        command: LintCommand,
+    },
+    #[command(about = "Inspect operation logs")]
+    Log {
+        #[command(subcommand)]
+        command: LogCommand,
+    },
+    #[command(about = "List ingested source records")]
+    Sources,
+    #[command(about = "Preview or approve a strict JSON command proposal")]
     Proposal {
         #[arg(long)]
         json: String,
         #[arg(long)]
         yes: bool,
     },
+    #[command(about = "Inspect saved wiki pages")]
     Wiki {
         #[command(subcommand)]
         command: WikiCommand,
@@ -40,8 +63,30 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum WikiCommand {
+    #[command(about = "List saved wiki pages")]
     List,
+    #[command(about = "Search saved wiki pages")]
     Search { query: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum IngestCommand {
+    #[command(about = "Ingest one trusted workspace file")]
+    File { path: PathBuf },
+    #[command(about = "Recursively ingest supported files in a folder")]
+    Folder { path: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+enum LintCommand {
+    #[command(about = "Check wiki frontmatter, wikilinks, and duplicate titles")]
+    Wiki,
+}
+
+#[derive(Debug, Subcommand)]
+enum LogCommand {
+    #[command(about = "Show recent operation log entries")]
+    Recent,
 }
 
 #[tokio::main]
@@ -54,6 +99,50 @@ async fn main() -> Result<()> {
             "{}",
             codesmith_cli::doctor_output(&settings, &settings_path()).await
         );
+    } else if let Some(Command::Ingest { command }) = cli.command {
+        let settings = load_settings()?;
+        let root = codesmith_root();
+        let wiki = WikiStore::open(&root)?;
+        let storage = Storage::open(&root)?;
+        match command {
+            IngestCommand::File { path } => print!(
+                "{}",
+                codesmith_cli::ingest_file_output(
+                    &wiki,
+                    &storage,
+                    &settings.default_workspace,
+                    &path
+                )?
+            ),
+            IngestCommand::Folder { path } => print!(
+                "{}",
+                codesmith_cli::ingest_folder_output(
+                    &wiki,
+                    &storage,
+                    &settings.default_workspace,
+                    &path
+                )?
+            ),
+        }
+    } else if let Some(Command::Query { question }) = cli.command {
+        let root = codesmith_root();
+        let wiki = WikiStore::open(&root)?;
+        print!("{}", codesmith_cli::query_output(&wiki, &question)?);
+    } else if let Some(Command::Lint { command }) = cli.command {
+        let root = codesmith_root();
+        let wiki = WikiStore::open(&root)?;
+        match command {
+            LintCommand::Wiki => print!("{}", codesmith_cli::lint_wiki_output(&wiki)?),
+        }
+    } else if let Some(Command::Log { command }) = cli.command {
+        let root = codesmith_root();
+        match command {
+            LogCommand::Recent => print!("{}", codesmith_cli::log_recent_output(&root)?),
+        }
+    } else if let Some(Command::Sources) = cli.command {
+        let root = codesmith_root();
+        let storage = Storage::open(&root)?;
+        print!("{}", codesmith_cli::sources_output(&storage)?);
     } else if let Some(Command::Chat) = cli.command {
         run_chat().await?;
     } else if let Some(Command::Proposal { json, yes }) = cli.command {
@@ -89,6 +178,7 @@ async fn run_chat() -> Result<()> {
     let mut settings = load_settings()?;
     let root = codesmith_root();
     let wiki = WikiStore::open(&root).ok();
+    let storage = Storage::open(&root).ok();
     let mut history = Vec::<ChatMessage>::new();
     ensure_workspace_trust(&root, &settings.default_workspace)?;
 
@@ -135,6 +225,60 @@ async fn run_chat() -> Result<()> {
                     "{}",
                     codesmith_cli::doctor_output(&settings, &settings_path()).await
                 );
+            }
+            codesmith_cli::ReplCommand::IngestFile(path) => {
+                if let (Some(wiki), Some(storage)) = (wiki.as_ref(), storage.as_ref()) {
+                    print!(
+                        "{}",
+                        codesmith_cli::ingest_file_output(
+                            wiki,
+                            storage,
+                            &settings.default_workspace,
+                            &path
+                        )?
+                    );
+                } else {
+                    println!("wiki unavailable");
+                }
+            }
+            codesmith_cli::ReplCommand::IngestFolder(path) => {
+                if let (Some(wiki), Some(storage)) = (wiki.as_ref(), storage.as_ref()) {
+                    print!(
+                        "{}",
+                        codesmith_cli::ingest_folder_output(
+                            wiki,
+                            storage,
+                            &settings.default_workspace,
+                            &path
+                        )?
+                    );
+                } else {
+                    println!("wiki unavailable");
+                }
+            }
+            codesmith_cli::ReplCommand::Query(question) => {
+                if let Some(wiki) = wiki.as_ref() {
+                    print!("{}", codesmith_cli::query_output(wiki, &question)?);
+                } else {
+                    println!("wiki unavailable");
+                }
+            }
+            codesmith_cli::ReplCommand::LintWiki => {
+                if let Some(wiki) = wiki.as_ref() {
+                    print!("{}", codesmith_cli::lint_wiki_output(wiki)?);
+                } else {
+                    println!("wiki unavailable");
+                }
+            }
+            codesmith_cli::ReplCommand::LogRecent => {
+                print!("{}", codesmith_cli::log_recent_output(&root)?);
+            }
+            codesmith_cli::ReplCommand::Sources => {
+                if let Some(storage) = storage.as_ref() {
+                    print!("{}", codesmith_cli::sources_output(storage)?);
+                } else {
+                    println!("storage unavailable");
+                }
             }
             codesmith_cli::ReplCommand::WikiList => {
                 if let Some(wiki) = wiki.as_ref() {

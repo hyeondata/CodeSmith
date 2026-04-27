@@ -21,6 +21,7 @@ codesmith-storage = { path = "../storage" }
 codesmith-wiki = { path = "../wiki" }
 dirs.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

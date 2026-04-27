@@ -1,21 +1,34 @@
 # CodeSmith Architecture
 
-CodeSmith v1 is an execution-only local desktop agent. The app keeps the LLM, policy, command runner, storage, wiki, and GUI separated so the runtime can grow without weakening the approval boundary.
+CodeSmith v1 is an execution-only local agent. The GUI remains in the workspace, but the active architecture is CLI-first: the command line owns new chat, tool execution, ingest, query, lint, and local wiki workflows while the approval boundary stays unchanged.
 
 ## Current Workspace
 
 - `crates/app`: native `eframe` entry point and default window sizing.
-- `crates/cli`: headless and interactive CLI for local LLM chat, settings, command proposals, doctor checks, and wiki inspection.
+- `crates/cli`: primary runtime for local LLM chat, settings, command proposals, ingest/query/lint/log, doctor checks, and wiki inspection.
 - `crates/ui`: egui shell, Codex-style three-panel layout, settings UI, command approval flow, run log actions, CJK font fallback.
 - `crates/core`: shared settings, chat, command proposal, command run, policy, wiki, and event types.
 - `crates/llm`: OpenAI-compatible local chat completion client.
 - `crates/agent`: strict JSON command proposal parser. Malformed JSON is treated as assistant text.
 - `crates/policy`: workspace boundary and destructive command checks.
 - `crates/runner`: approved shell command execution with streamed stdout/stderr and timeout handling.
-- `crates/storage`: settings, session metadata, transcripts, and command run persistence.
-- `crates/wiki`: Markdown wiki pages with YAML frontmatter and a lightweight term-frequency search.
+- `crates/storage`: settings, session metadata, transcripts, command run persistence, and CLI-first wiki metadata.
+- `crates/wiki`: `raw/`, `wiki/`, `schema/`, `index.md`, `log.md`, Markdown frontmatter, ingest, lint, and lightweight term-frequency search.
 
-## Runtime Flow
+## CLI Runtime Flow
+
+1. The user starts `codesmith-cli chat` or runs a headless CLI subcommand.
+2. `chat` verifies workspace trust before interactive LLM prompts or command approvals.
+3. The CLI expands `@workspace` and workspace-scoped `@file:` prompt context.
+4. `wiki` assembles `index.md` plus matching wiki pages as local context.
+5. `llm` streams from the configured OpenAI-compatible local endpoint.
+6. `agent` parses strict JSON command proposals; normal text stays assistant text.
+7. `policy` blocks commands outside the workspace or matching destructive patterns.
+8. The CLI asks for explicit approval before `runner` spawns any command.
+9. `runner` streams stdout/stderr, applies timeout handling, and returns status.
+10. `storage` persists transcripts, command runs, source metadata, ingest jobs, and wiki page metadata.
+
+## Legacy GUI Runtime Flow
 
 1. The user enters a prompt in the central chat composer.
 2. `ui` loads relevant wiki context and calls `llm`.
@@ -49,17 +62,18 @@ Implemented:
 - Wiki pages persisted as Markdown with YAML frontmatter under `~/.codesmith/wiki`.
 - App restart restores the prior transcript and command runs.
 - CLI commands implemented: `chat`, `-p/--print`, `proposal --json`, `doctor`, `wiki list`, and `wiki search`.
+- CLI-first wiki commands implemented: `ingest file`, `ingest folder`, `query`, `lint wiki`, `log recent`, and `sources`.
 
 Partially implemented:
 
-- Local wiki retrieval is connected to the agent prompt path, but the search implementation is a lightweight term-frequency scorer, not `tantivy` BM25.
-- `raw/`, `index/`, and `logs/` directories are created for the wiki architecture, but raw ingest, normalize, extract, integrate, conflict handling, and operation logs are not implemented yet.
+- Local wiki retrieval is connected to the agent prompt path, but the search implementation is a lightweight term-frequency scorer with title bonus, not `tantivy` BM25.
+- Raw ingest, `index.md`, `log.md`, SQLite source metadata, wiki lint, and query context exist for CLI-first workflows. Full normalize/extract/integrate conflict handling is not implemented yet.
 - Run actions exist for copy, save-to-wiki, and ask-follow-up. Broader per-message actions are still pending.
 - Command cancellation support exists in the runner design through timeout handling, but there is no user-facing cancel button yet.
 
 Not implemented in v1 yet:
 
-- Full LLM wiki pipeline: raw source ingest, normalization, extraction, integration, conflict state workflow, and durable operation log.
+- Full LLM wiki pipeline: normalization, extraction, integration, conflict state workflow, and LLM-reviewed wiki write proposals.
 - Tantivy-backed index.
 - MCP client/server support.
 - Embedded inference.
@@ -78,6 +92,10 @@ The current deny policy covers destructive or privileged patterns including recu
 - SQLite metadata: `~/.codesmith/codesmith.sqlite3`
 - JSONL transcripts: under `~/.codesmith/sessions`
 - Wiki pages: under `~/.codesmith/wiki`
+- Raw source snapshots: under `~/.codesmith/raw`
+- Wiki schema notes: under `~/.codesmith/schema`
+- Wiki navigation: `~/.codesmith/index.md`
+- Operation log: `~/.codesmith/log.md`
 
 The app default profile is Ollama-compatible:
 
@@ -181,6 +199,12 @@ Interactive commands:
 /set api-key <key|none>
 /set workspace <path>
 /set timeout <seconds>
+/ingest file <path>
+/ingest folder <path>
+/query <question>
+/lint wiki
+/log recent
+/sources
 /doctor
 /wiki list
 /wiki search <query>
@@ -220,6 +244,18 @@ Prompt helpers:
 - `@file:<relative-path>` attaches a UTF-8 text file from inside the trusted workspace.
 - `@file` paths are canonicalized and blocked if they escape the workspace.
 - File attachments are truncated at 12,000 bytes.
+
+CLI-first wiki smoke debugging on 2026-04-26 verified the new ingest/query/lint/log/source commands against the local `~/.codesmith` store.
+
+Verified flow:
+
+- `cargo run -p codesmith-cli -- ingest file Cargo.toml` wrote a raw source snapshot, SQLite source metadata, `index.md`, and `log.md`.
+- `cargo run -p codesmith-cli -- ingest folder crates/core` recursively ingested supported Rust/TOML files and skipped unsupported files.
+- `cargo run -p codesmith-cli -- query "cargo workspace"` assembled `index.md` plus matching wiki pages inside the context budget.
+- `cargo run -p codesmith-cli -- sources` listed the ingested source hashes and paths from SQLite metadata.
+- `cargo run -p codesmith-cli -- log recent` printed parseable operation log entries.
+- `cargo run -p codesmith-cli -- lint wiki` detected historical duplicate `Source: Cargo.toml` titles from earlier smoke data. New source summary pages now include a short hash suffix such as `Source: README.md (9302e2a9)` to avoid new title collisions.
+- Interactive `codesmith-cli chat` accepted `/help`, `/sources`, `/query`, `/log recent`, and `/exit` in one piped smoke session.
 
 CLI tool smoke debugging on 2026-04-25 verified that the CLI can act as an approval-gated local tool runner, not just a text interface.
 
