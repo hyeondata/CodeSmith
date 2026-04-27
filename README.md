@@ -216,6 +216,10 @@ cargo build --release -p codesmith-cli
 ## Documentation
 
 - Architecture and debugging notes: `docs/architecture.md`
+- Architecture and debugging notes (Korean): `docs/architecture.ko.md`
 - Versioning and release process: `docs/VERSIONING.md`
+- Versioning and release process (Korean): `docs/VERSIONING.ko.md`
 - Claude Code and Claurst CLI notes: `docs/research/claude-claurst-cli-notes.md`
 - CLI implementation plan: `docs/superpowers/plans/2026-04-25-codesmith-cli.md`
+- Korean README: `README.ko.md`
+- Release notes (Korean): `docs/v1-release-notes.ko.md`
