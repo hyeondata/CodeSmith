@@ -356,18 +356,40 @@ impl CodeSmithApp {
                 sidebar_item(ui, "Local Session", true);
                 ui.add_space(12.0);
                 section_header(ui, "Local LLM");
+                self.settings.ensure_model_profiles();
+                ui.label(
+                    egui::RichText::new(format!("Profile: {}", self.settings.active_profile))
+                        .color(MUTED)
+                        .small(),
+                );
                 field_label(ui, "Base URL");
-                ui.text_edit_singleline(&mut self.settings.llm_base_url);
+                let mut base_url = self.settings.llm_base_url.clone();
+                if ui.text_edit_singleline(&mut base_url).changed() {
+                    if let Some(profile) = self.settings.active_model_profile_mut() {
+                        profile.base_url = base_url;
+                    }
+                    self.settings.ensure_model_profiles();
+                }
                 field_label(ui, "Model");
-                ui.text_edit_singleline(&mut self.settings.llm_model);
+                let mut model = self.settings.llm_model.clone();
+                if ui.text_edit_singleline(&mut model).changed() {
+                    if let Some(profile) = self.settings.active_model_profile_mut() {
+                        profile.model = model;
+                    }
+                    self.settings.ensure_model_profiles();
+                }
                 field_label(ui, "API key");
                 let mut api_key = self.settings.api_key.clone().unwrap_or_default();
                 if ui.text_edit_singleline(&mut api_key).changed() {
-                    self.settings.api_key = if api_key.is_empty() {
+                    let api_key = if api_key.is_empty() {
                         None
                     } else {
                         Some(api_key)
                     };
+                    if let Some(profile) = self.settings.active_model_profile_mut() {
+                        profile.api_key = api_key;
+                    }
+                    self.settings.ensure_model_profiles();
                 }
                 field_label(ui, "Workspace");
                 let mut workspace = self.settings.default_workspace.display().to_string();

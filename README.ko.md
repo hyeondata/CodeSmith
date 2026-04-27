@@ -86,6 +86,9 @@ cargo run -p codesmith-cli -- chat
 /set api-key <key|none>
 /set workspace <path>
 /set timeout <seconds>
+/models
+/model use <id>
+/model show
 /ingest file <path>
 /ingest folder <path>
 /query <question>
@@ -123,6 +126,17 @@ cargo run -p codesmith-cli -- -p "Return exactly OK"
 ```bash
 cargo run -p codesmith-cli -- doctor
 ```
+
+로컬 모델 프로파일 관리:
+
+```bash
+cargo run -p codesmith-cli -- models list
+cargo run -p codesmith-cli -- models add-local --id qwen35-opus --backend ollama --base-url http://localhost:11434/v1 --model gag0/qwen35-opus-distil:27b
+cargo run -p codesmith-cli -- models use qwen35-opus
+cargo run -p codesmith-cli -- models show
+```
+
+지원하는 local backend kind는 `ollama`, `vllm`, `litellm`, `openai_compatible`입니다. CodeSmith는 계속 OpenAI-compatible `/v1/chat/completions`와 `/v1/models` endpoint를 호출하며, profile에는 backend label, base URL, model name, optional API key, temperature, context hint, 모델별 전체 system prompt를 저장합니다.
 
 명령 제안을 실행 없이 미리보기:
 

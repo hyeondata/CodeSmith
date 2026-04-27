@@ -21,12 +21,14 @@ CodeSmith v1은 실행 전용 로컬 에이전트입니다. GUI 코드는 worksp
 2. `chat`은 interactive LLM prompt 또는 command approval 전에 workspace trust를 확인합니다.
 3. CLI는 `@workspace`와 workspace-scoped `@file:` prompt context를 확장합니다.
 4. `wiki`는 `index.md`와 matching wiki page를 local context로 조립합니다.
-5. `llm`은 설정된 OpenAI-compatible local endpoint에서 streaming 응답을 받습니다.
-6. `agent`는 엄격한 JSON command proposal을 파싱하고, 일반 text는 assistant text로 둡니다.
-7. `policy`는 workspace 밖 명령과 destructive pattern을 차단합니다.
-8. CLI는 `runner`가 process를 spawn하기 전에 명시적 승인을 요청합니다.
-9. `runner`는 stdout/stderr를 streaming하고 timeout을 적용한 뒤 status를 반환합니다.
-10. `storage`는 transcript, command run, source metadata, ingest job, wiki page metadata를 저장합니다.
+5. `storage`는 `~/.codesmith/settings.toml`에서 active local model profile을 찾습니다.
+6. Active profile은 backend kind, base URL, model name, optional API key, temperature, context hint, 모델별 전체 system prompt를 제공합니다.
+7. `llm`은 설정된 OpenAI-compatible local endpoint에서 streaming 응답을 받습니다.
+8. `agent`는 엄격한 JSON command proposal을 파싱하고, 일반 text는 assistant text로 둡니다.
+9. `policy`는 workspace 밖 명령과 destructive pattern을 차단합니다.
+10. CLI는 `runner`가 process를 spawn하기 전에 명시적 승인을 요청합니다.
+11. `runner`는 stdout/stderr를 streaming하고 timeout을 적용한 뒤 status를 반환합니다.
+12. `storage`는 transcript, command run, source metadata, ingest job, wiki page metadata를 저장합니다.
 
 ## Legacy GUI Runtime Flow
 
@@ -51,7 +53,8 @@ CodeSmith v1은 실행 전용 로컬 에이전트입니다. GUI 코드는 worksp
 - Stable Rust toolchain pin과 workspace manifest의 stable crate version.
 - Codex 스타일 3패널 `eframe/egui` native app.
 - `/v1/chat/completions` streaming 기반 OpenAI-compatible LLM client.
-- 설정 가능한 Ollama-compatible default endpoint.
+- Ollama, vLLM, LiteLLM, custom OpenAI-compatible endpoint를 위한 local model profile.
+- 모델별 전체 system prompt. `gag0/qwen35-opus-distil:27b`는 strict unfenced JSON proposal을 선호하도록 prompt를 둠.
 - Strict JSON command proposal parsing.
 - 모든 command에 approval-before-execution boundary.
 - Workspace-scoped policy check와 destructive-command blocking.
@@ -61,6 +64,7 @@ CodeSmith v1은 실행 전용 로컬 에이전트입니다. GUI 코드는 worksp
 - JSONL chat transcript persistence.
 - `~/.codesmith/wiki` Markdown + YAML frontmatter wiki page persistence.
 - CLI command: `chat`, `-p/--print`, `proposal --json`, `doctor`, `wiki list`, `wiki search`.
+- CLI model profile command: `models list`, `models show`, `models use <id>`, `models add-local`.
 - CLI-first wiki command: `ingest file`, `ingest folder`, `query`, `lint wiki`, `log recent`, `sources`.
 
 부분 구현:

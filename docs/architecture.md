@@ -21,12 +21,14 @@ CodeSmith v1 is an execution-only local agent. The GUI remains in the workspace,
 2. `chat` verifies workspace trust before interactive LLM prompts or command approvals.
 3. The CLI expands `@workspace` and workspace-scoped `@file:` prompt context.
 4. `wiki` assembles `index.md` plus matching wiki pages as local context.
-5. `llm` streams from the configured OpenAI-compatible local endpoint.
-6. `agent` parses strict JSON command proposals; normal text stays assistant text.
-7. `policy` blocks commands outside the workspace or matching destructive patterns.
-8. The CLI asks for explicit approval before `runner` spawns any command.
-9. `runner` streams stdout/stderr, applies timeout handling, and returns status.
-10. `storage` persists transcripts, command runs, source metadata, ingest jobs, and wiki page metadata.
+5. `storage` resolves the active local model profile from `~/.codesmith/settings.toml`.
+6. The active profile supplies backend kind, base URL, model name, optional API key, temperature, context hint, and a full model-specific system prompt.
+7. `llm` streams from the configured OpenAI-compatible local endpoint.
+8. `agent` parses strict JSON command proposals; normal text stays assistant text.
+9. `policy` blocks commands outside the workspace or matching destructive patterns.
+10. The CLI asks for explicit approval before `runner` spawns any command.
+11. `runner` streams stdout/stderr, applies timeout handling, and returns status.
+12. `storage` persists transcripts, command runs, source metadata, ingest jobs, and wiki page metadata.
 
 ## Legacy GUI Runtime Flow
 
@@ -51,7 +53,8 @@ Implemented:
 - Stable Rust toolchain pin and stable crate versions in the workspace manifest.
 - Native `eframe/egui` app with a Codex-style three-panel layout.
 - Local OpenAI-compatible LLM client using `/v1/chat/completions` streaming.
-- Ollama-compatible default endpoint support through configurable settings.
+- Local model profiles for Ollama, vLLM, LiteLLM, and custom OpenAI-compatible endpoints.
+- Model-specific full system prompts, with `gag0/qwen35-opus-distil:27b` tuned to prefer strict unfenced JSON proposals.
 - Strict JSON command proposal parsing.
 - Approval-before-execution boundary for all commands.
 - Workspace-scoped policy checks and destructive-command blocking.
@@ -62,6 +65,7 @@ Implemented:
 - Wiki pages persisted as Markdown with YAML frontmatter under `~/.codesmith/wiki`.
 - App restart restores the prior transcript and command runs.
 - CLI commands implemented: `chat`, `-p/--print`, `proposal --json`, `doctor`, `wiki list`, and `wiki search`.
+- CLI model profile commands implemented: `models list`, `models show`, `models use <id>`, and `models add-local`.
 - CLI-first wiki commands implemented: `ingest file`, `ingest folder`, `query`, `lint wiki`, `log recent`, and `sources`.
 
 Partially implemented:

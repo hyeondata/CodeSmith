@@ -85,6 +85,9 @@ Interactive commands:
 /set api-key <key|none>
 /set workspace <path>
 /set timeout <seconds>
+/models
+/model use <id>
+/model show
 /ingest file <path>
 /ingest folder <path>
 /query <question>
@@ -122,6 +125,17 @@ Check local endpoint and model:
 ```bash
 cargo run -p codesmith-cli -- doctor
 ```
+
+Manage local model profiles:
+
+```bash
+cargo run -p codesmith-cli -- models list
+cargo run -p codesmith-cli -- models add-local --id qwen35-opus --backend ollama --base-url http://localhost:11434/v1 --model gag0/qwen35-opus-distil:27b
+cargo run -p codesmith-cli -- models use qwen35-opus
+cargo run -p codesmith-cli -- models show
+```
+
+Supported local backend kinds are `ollama`, `vllm`, `litellm`, and `openai_compatible`. CodeSmith still calls the OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints; the profile stores the backend label, base URL, model name, optional API key, temperature, context hint, and full model-specific system prompt.
 
 Preview a command proposal without running it:
 

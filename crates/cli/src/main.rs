@@ -47,6 +47,11 @@ enum Command {
     },
     #[command(about = "List ingested source records")]
     Sources,
+    #[command(about = "Manage local model profiles")]
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommand,
+    },
     #[command(about = "Preview or approve a strict JSON command proposal")]
     Proposal {
         #[arg(long)]
@@ -87,6 +92,29 @@ enum LintCommand {
 enum LogCommand {
     #[command(about = "Show recent operation log entries")]
     Recent,
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelsCommand {
+    #[command(about = "List model profiles")]
+    List,
+    #[command(about = "Show the active model profile")]
+    Show,
+    #[command(about = "Switch the active model profile")]
+    Use { id: String },
+    #[command(about = "Add or replace a local OpenAI-compatible model profile")]
+    AddLocal {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        backend: String,
+        #[arg(long = "base-url")]
+        base_url: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -143,6 +171,39 @@ async fn main() -> Result<()> {
         let root = codesmith_root();
         let storage = Storage::open(&root)?;
         print!("{}", codesmith_cli::sources_output(&storage)?);
+    } else if let Some(Command::Models { command }) = cli.command {
+        let mut settings = load_settings()?;
+        match command {
+            ModelsCommand::List => print!("{}", codesmith_cli::model_profiles_output(&settings)),
+            ModelsCommand::Show => {
+                print!("{}", codesmith_cli::active_model_profile_output(&settings))
+            }
+            ModelsCommand::Use { id } => {
+                print!("{}", codesmith_cli::use_model_profile(&mut settings, &id)?);
+                save_settings(&settings)?;
+            }
+            ModelsCommand::AddLocal {
+                id,
+                backend,
+                base_url,
+                model,
+                name,
+            } => {
+                let backend = codesmith_cli::parse_backend_kind(&backend)?;
+                print!(
+                    "{}",
+                    codesmith_cli::add_local_model_profile(
+                        &mut settings,
+                        &id,
+                        backend,
+                        &base_url,
+                        &model,
+                        name.as_deref(),
+                    )?
+                );
+                save_settings(&settings)?;
+            }
+        }
     } else if let Some(Command::Chat) = cli.command {
         run_chat().await?;
     } else if let Some(Command::Proposal { json, yes }) = cli.command {
@@ -210,6 +271,16 @@ async fn run_chat() -> Result<()> {
                     "{}",
                     codesmith_cli::settings_summary(&settings, &settings_path())
                 );
+            }
+            codesmith_cli::ReplCommand::Models => {
+                print!("{}", codesmith_cli::model_profiles_output(&settings));
+            }
+            codesmith_cli::ReplCommand::ModelShow => {
+                print!("{}", codesmith_cli::active_model_profile_output(&settings));
+            }
+            codesmith_cli::ReplCommand::ModelUse(id) => {
+                print!("{}", codesmith_cli::use_model_profile(&mut settings, &id)?);
+                save_settings(&settings)?;
             }
             codesmith_cli::ReplCommand::Set(update) => {
                 let message = codesmith_cli::apply_setting_update(&mut settings, update)?;
@@ -337,7 +408,7 @@ async fn handle_interactive_prompt(
     history: &mut Vec<ChatMessage>,
 ) -> Result<()> {
     println!("CodeSmith is generating a response...");
-    let messages = codesmith_cli::build_conversation_messages(prompt, history, wiki);
+    let messages = codesmith_cli::build_conversation_messages(prompt, history, settings, wiki);
     let output = OpenAiClient::new(settings.clone())
         .stream_chat(&messages)
         .await?

@@ -11,7 +11,7 @@ cargo run -p codesmith-cli -- chat
 Default local LLM settings:
 
 - Base URL: `http://localhost:11434/v1`
-- Model: configured in `~/.codesmith/settings.toml` or the app settings panel
+- Model: selected by the active model profile in `~/.codesmith/settings.toml`
 - API key: optional placeholder
 - Settings file: `~/.codesmith/settings.toml`
 
@@ -39,6 +39,9 @@ Useful chat commands:
 /settings
 /set model <name>
 /set base-url <url>
+/models
+/model use <id>
+/model show
 /doctor
 /ingest file <path>
 /ingest folder <path>
@@ -52,6 +55,17 @@ Useful chat commands:
 ```
 
 The CLI requires workspace trust before interactive LLM prompts or command approvals. It also supports `@workspace` and workspace-scoped `@file:<path>` prompt context.
+
+Model profile commands:
+
+```bash
+cargo run -p codesmith-cli -- models list
+cargo run -p codesmith-cli -- models add-local --id qwen35-opus --backend ollama --base-url http://localhost:11434/v1 --model gag0/qwen35-opus-distil:27b
+cargo run -p codesmith-cli -- models use qwen35-opus
+cargo run -p codesmith-cli -- models show
+```
+
+Existing single-model settings migrate to a `default` profile. Profiles can represent Ollama, vLLM, LiteLLM, or custom OpenAI-compatible local endpoints and carry a full model-specific system prompt.
 
 Headless wiki commands:
 

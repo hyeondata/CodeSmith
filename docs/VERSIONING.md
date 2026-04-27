@@ -121,7 +121,8 @@ Do not tag until the release checklist passes.
 Track compatibility-sensitive changes in release notes:
 
 - CLI command names, flags, prompts, and approval behavior.
-- Settings file format under `~/.codesmith/settings.toml`.
+- Settings file format under `~/.codesmith/settings.toml`, including `active_profile` and `model_profiles`.
+- Model profile fields: backend kind, base URL, model name, API key placeholder, temperature, context hint, and system prompt.
 - SQLite schema under `~/.codesmith/codesmith.sqlite3`.
 - Source and ingest metadata under SQLite `source_records`, `ingest_jobs`, and `wiki_page_metadata`.
 - Transcript JSONL format under `~/.codesmith/sessions`.

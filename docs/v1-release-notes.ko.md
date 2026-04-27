@@ -11,7 +11,7 @@ cargo run -p codesmith-cli -- chat
 기본 local LLM settings:
 
 - Base URL: `http://localhost:11434/v1`
-- Model: `~/.codesmith/settings.toml` 또는 app settings panel에서 설정
+- Model: `~/.codesmith/settings.toml`의 active model profile로 선택
 - API key: optional placeholder
 - Settings file: `~/.codesmith/settings.toml`
 
@@ -43,6 +43,9 @@ cargo run -p codesmith-cli -- chat
 /settings
 /set model <name>
 /set base-url <url>
+/models
+/model use <id>
+/model show
 /doctor
 /ingest file <path>
 /ingest folder <path>
@@ -56,6 +59,17 @@ cargo run -p codesmith-cli -- chat
 ```
 
 CLI는 interactive LLM prompt 또는 command approval 전에 workspace trust를 요구합니다. `@workspace`와 workspace-scoped `@file:<path>` prompt context를 지원합니다.
+
+Model profile command:
+
+```bash
+cargo run -p codesmith-cli -- models list
+cargo run -p codesmith-cli -- models add-local --id qwen35-opus --backend ollama --base-url http://localhost:11434/v1 --model gag0/qwen35-opus-distil:27b
+cargo run -p codesmith-cli -- models use qwen35-opus
+cargo run -p codesmith-cli -- models show
+```
+
+기존 single-model settings는 `default` profile로 migrate됩니다. Profile은 Ollama, vLLM, LiteLLM, custom OpenAI-compatible local endpoint를 표현하며 모델별 전체 system prompt를 함께 저장합니다.
 
 Headless wiki command:
 

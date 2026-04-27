@@ -122,7 +122,8 @@ Release checklist가 통과하기 전에는 tag를 만들지 않습니다.
 Release note에서 호환성에 민감한 변경을 추적합니다.
 
 - CLI command name, flag, prompt, approval behavior.
-- `~/.codesmith/settings.toml` settings file format.
+- `~/.codesmith/settings.toml` settings file format. `active_profile`과 `model_profiles` 포함.
+- Model profile field: backend kind, base URL, model name, API key placeholder, temperature, context hint, system prompt.
 - `~/.codesmith/codesmith.sqlite3` SQLite schema.
 - SQLite `source_records`, `ingest_jobs`, `wiki_page_metadata`에 저장되는 source/ingest metadata.
 - `~/.codesmith/sessions` transcript JSONL format.

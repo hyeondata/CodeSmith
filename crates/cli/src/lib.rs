@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use codesmith_agent::{AgentOutput, parse_agent_output};
 use codesmith_core::{
-    AppSettings, ChatMessage, ChatRole, CommandProposal, IngestJob, SourceStatus,
+    AppSettings, BackendKind, ChatMessage, ChatRole, CommandProposal, IngestJob, ModelProfile,
+    SourceStatus, default_system_prompt,
 };
 use codesmith_llm::OpenAiClient;
 use codesmith_policy::evaluate;
@@ -26,6 +27,9 @@ pub fn repl_help() -> &'static str {
      /set api-key <key|none>   set or clear API key placeholder\n\
      /set workspace <path>     set command workspace\n\
      /set timeout <seconds>    set command timeout\n\
+     /models                   list model profiles\n\
+     /model use <id>           switch active model profile\n\
+     /model show               show active model profile\n\
      /prompts                  show recommended prompts\n\
      /doctor                   test local LLM connection\n\
      /ingest file <path>       snapshot a trusted workspace file into raw/ and wiki\n\
@@ -46,6 +50,9 @@ pub enum ReplCommand {
     Prompts,
     Settings,
     Set(SettingUpdate),
+    Models,
+    ModelUse(String),
+    ModelShow,
     Doctor,
     IngestFile(PathBuf),
     IngestFolder(PathBuf),
@@ -83,6 +90,8 @@ pub fn parse_repl_line(line: &str) -> ReplCommand {
         "/help" => ReplCommand::Help,
         "/prompts" => ReplCommand::Prompts,
         "/settings" => ReplCommand::Settings,
+        "/models" | "/models list" => ReplCommand::Models,
+        "/model show" => ReplCommand::ModelShow,
         "/doctor" => ReplCommand::Doctor,
         "/wiki list" => ReplCommand::WikiList,
         "/lint wiki" => ReplCommand::LintWiki,
@@ -93,19 +102,30 @@ pub fn parse_repl_line(line: &str) -> ReplCommand {
 }
 
 pub fn apply_setting_update(settings: &mut AppSettings, update: SettingUpdate) -> Result<String> {
+    settings.ensure_model_profiles();
     let message = match update {
         SettingUpdate::BaseUrl(value) => {
             ensure_non_empty("base-url", &value)?;
-            settings.llm_base_url = value;
+            if let Some(profile) = settings.active_model_profile_mut() {
+                profile.base_url = value;
+            }
+            settings.ensure_model_profiles();
             "base-url updated".to_string()
         }
         SettingUpdate::Model(value) => {
             ensure_non_empty("model", &value)?;
-            settings.llm_model = value;
+            if let Some(profile) = settings.active_model_profile_mut() {
+                profile.model = value;
+            }
+            settings.ensure_model_profiles();
             "model updated".to_string()
         }
         SettingUpdate::ApiKey(value) => {
-            settings.api_key = value.filter(|key| !key.trim().is_empty());
+            let value = value.filter(|key| !key.trim().is_empty());
+            if let Some(profile) = settings.active_model_profile_mut() {
+                profile.api_key = value;
+            }
+            settings.ensure_model_profiles();
             "api-key updated".to_string()
         }
         SettingUpdate::Workspace(value) => {
@@ -124,15 +144,30 @@ pub fn apply_setting_update(settings: &mut AppSettings, update: SettingUpdate) -
 }
 
 pub fn settings_summary(settings: &AppSettings, settings_path: &Path) -> String {
+    let mut settings = settings.clone();
+    settings.ensure_model_profiles();
+    let profile = settings.active_model_profile();
     format!(
-        "Settings\npath: {}\nbase-url: {}\nmodel: {}\napi-key: {}\nworkspace: {}\ntimeout: {}s\n",
+        "Settings\npath: {}\nactive-profile: {}\nbackend: {}\nbase-url: {}\nmodel: {}\napi-key: {}\nprompt: {}\nworkspace: {}\ntimeout: {}s\n",
         settings_path.display(),
+        settings.active_profile,
+        profile
+            .map(|profile| profile.backend_kind.as_str())
+            .unwrap_or("missing"),
         settings.llm_base_url,
         settings.llm_model,
         if settings.api_key.as_deref().unwrap_or("").is_empty() {
             "<none>"
         } else {
             "<set>"
+        },
+        if profile
+            .map(|profile| profile.system_prompt != default_system_prompt())
+            .unwrap_or(false)
+        {
+            "custom"
+        } else {
+            "default"
         },
         settings.default_workspace.display(),
         settings.command_timeout_secs
@@ -156,6 +191,124 @@ pub fn recommended_prompts_output() -> &'static str {
      - Inspect @workspace and propose a read-only diagnostic command.\n\
      - Explain @file:Cargo.toml and list important dependencies.\n\
      - Search the local wiki for prior command patterns before answering.\n"
+}
+
+pub fn add_local_model_profile(
+    settings: &mut AppSettings,
+    id: &str,
+    backend: BackendKind,
+    base_url: &str,
+    model: &str,
+    name: Option<&str>,
+) -> Result<String> {
+    ensure_non_empty("id", id)?;
+    ensure_non_empty("base-url", base_url)?;
+    ensure_non_empty("model", model)?;
+    settings.ensure_model_profiles();
+    let profile = ModelProfile {
+        id: id.to_string(),
+        name: name.unwrap_or(model).to_string(),
+        backend_kind: backend,
+        base_url: base_url.to_string(),
+        model: model.to_string(),
+        api_key: None,
+        system_prompt: prompt_for_model(model),
+        temperature: None,
+        context_hint: Some(format!("{} local profile", backend.as_str())),
+    };
+    if let Some(existing) = settings
+        .model_profiles
+        .iter_mut()
+        .find(|profile| profile.id == id)
+    {
+        *existing = profile;
+    } else {
+        settings.model_profiles.push(profile);
+    }
+    Ok(format!("model profile added: {id}\n"))
+}
+
+pub fn use_model_profile(settings: &mut AppSettings, id: &str) -> Result<String> {
+    settings.ensure_model_profiles();
+    if !settings
+        .model_profiles
+        .iter()
+        .any(|profile| profile.id == id)
+    {
+        anyhow::bail!("model profile '{id}' was not found");
+    }
+    settings.active_profile = id.to_string();
+    settings.ensure_model_profiles();
+    Ok(format!("active model profile: {id}\n"))
+}
+
+pub fn model_profiles_output(settings: &AppSettings) -> String {
+    let mut settings = settings.clone();
+    settings.ensure_model_profiles();
+    let mut output = String::from("Model profiles\n");
+    for profile in &settings.model_profiles {
+        let marker = if profile.id == settings.active_profile {
+            "*"
+        } else {
+            "-"
+        };
+        output.push_str(&format!(
+            "{marker} {} [{}] {} @ {}\n",
+            profile.id,
+            profile.backend_kind.as_str(),
+            profile.model,
+            profile.base_url
+        ));
+    }
+    output
+}
+
+pub fn active_model_profile_output(settings: &AppSettings) -> String {
+    let mut settings = settings.clone();
+    settings.ensure_model_profiles();
+    let Some(profile) = settings.active_model_profile() else {
+        return "Active model profile\nmissing\n".to_string();
+    };
+    format!(
+        "Active model profile\nid: {}\nname: {}\nbackend: {}\nbase-url: {}\nmodel: {}\napi-key: {}\ntemperature: {}\nprompt: {}\n",
+        profile.id,
+        profile.name,
+        profile.backend_kind.as_str(),
+        profile.base_url,
+        profile.model,
+        if profile.api_key.as_deref().unwrap_or("").is_empty() {
+            "<none>"
+        } else {
+            "<set>"
+        },
+        profile
+            .temperature
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "<default>".to_string()),
+        if profile.system_prompt == default_system_prompt() {
+            "default"
+        } else {
+            "custom"
+        }
+    )
+}
+
+pub fn parse_backend_kind(input: &str) -> Result<BackendKind> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "ollama" => Ok(BackendKind::Ollama),
+        "vllm" => Ok(BackendKind::Vllm),
+        "litellm" => Ok(BackendKind::Litellm),
+        "openai_compatible" | "openai-compatible" | "custom" => Ok(BackendKind::OpenAiCompatible),
+        other => anyhow::bail!("unknown backend kind: {other}"),
+    }
+}
+
+pub fn prompt_for_model(model: &str) -> String {
+    if model == "gag0/qwen35-opus-distil:27b" {
+        return "You are CodeSmith running on gag0/qwen35-opus-distil:27b. Maximize correctness by being concise, explicit, and conservative. CodeSmith is execution-only: never imply that a command ran unless tool output proves it. If a shell command is needed, return one strict JSON object only with command, cwd, and reason fields. Do not use Markdown fences, comments, trailing prose, or extra keys around command proposal JSON. Prefer commands that write only inside the configured workspace, and keep debugging steps observable through stdout/stderr."
+            .to_string();
+    }
+    default_system_prompt()
 }
 
 pub fn ingest_file_output(
@@ -349,7 +502,7 @@ pub async fn handle_print_prompt(
     wiki: Option<&WikiStore>,
     yes: bool,
 ) -> Result<String> {
-    let messages = build_prompt_messages(prompt, wiki);
+    let messages = build_prompt_messages(prompt, settings, wiki);
     let client = OpenAiClient::new(settings.clone());
     let output = client.stream_chat(&messages).await?.concat();
     match parse_cli_agent_output(&output).context("parse agent output")? {
@@ -358,16 +511,27 @@ pub async fn handle_print_prompt(
     }
 }
 
-pub fn build_prompt_messages(prompt: &str, wiki: Option<&WikiStore>) -> Vec<ChatMessage> {
-    build_conversation_messages(prompt, &[], wiki)
+pub fn build_prompt_messages(
+    prompt: &str,
+    settings: &AppSettings,
+    wiki: Option<&WikiStore>,
+) -> Vec<ChatMessage> {
+    build_conversation_messages(prompt, &[], settings, wiki)
 }
 
 pub fn build_conversation_messages(
     prompt: &str,
     history: &[ChatMessage],
+    settings: &AppSettings,
     wiki: Option<&WikiStore>,
 ) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
+    if let Some(profile) = settings.active_model_profile() {
+        messages.push(ChatMessage::new(
+            ChatRole::System,
+            profile.system_prompt.clone(),
+        ));
+    }
     if let Some(context) = wiki_context(prompt, wiki) {
         messages.push(ChatMessage::new(ChatRole::System, context));
     }
@@ -377,13 +541,20 @@ pub fn build_conversation_messages(
 }
 
 pub async fn doctor_output(settings: &AppSettings, settings_path: &Path) -> String {
+    let mut settings = settings.clone();
+    settings.ensure_model_profiles();
     let connection = match OpenAiClient::new(settings.clone()).test_connection().await {
         Ok(()) => "Connection OK".to_string(),
         Err(error) => format!("Connection failed: {error}"),
     };
     format!(
-        "CodeSmith doctor\nsettings: {}\nbase_url: {}\nmodel: {}\nworkspace: {}\ntimeout_secs: {}\n{}\n",
+        "CodeSmith doctor\nsettings: {}\nprofile: {}\nbackend: {}\nbase_url: {}\nmodel: {}\nworkspace: {}\ntimeout_secs: {}\n{}\n",
         settings_path.display(),
+        settings.active_profile,
+        settings
+            .active_model_profile()
+            .map(|profile| profile.backend_kind.as_str())
+            .unwrap_or("missing"),
         settings.llm_base_url,
         settings.llm_model,
         settings.default_workspace.display(),
@@ -519,6 +690,14 @@ fn parse_parameterized_repl_command(trimmed: &str) -> ReplCommand {
             ReplCommand::Query(question.to_string())
         };
     }
+    if let Some(id) = trimmed.strip_prefix("/model use ") {
+        let id = id.trim();
+        return if id.is_empty() {
+            ReplCommand::Unknown(trimmed.to_string())
+        } else {
+            ReplCommand::ModelUse(id.to_string())
+        };
+    }
 
     let Some(rest) = trimmed.strip_prefix("/set ") else {
         return ReplCommand::Unknown(trimmed.to_string());
@@ -631,13 +810,22 @@ mod tests {
     use std::path::PathBuf;
 
     fn settings() -> AppSettings {
-        AppSettings {
+        let mut settings = AppSettings {
             llm_base_url: "http://localhost:11434/v1".to_string(),
             llm_model: "local".to_string(),
             api_key: None,
             default_workspace: PathBuf::from("/Users/gim-yonghyeon/CodeSmith"),
             command_timeout_secs: 5,
-        }
+            ..Default::default()
+        };
+        settings.model_profiles = vec![ModelProfile::from_legacy(
+            "default",
+            settings.llm_base_url.clone(),
+            settings.llm_model.clone(),
+            settings.api_key.clone(),
+        )];
+        settings.ensure_model_profiles();
+        settings
     }
 
     #[test]
@@ -698,13 +886,16 @@ mod tests {
         wiki.save_page("Command: printf cli-ok", "commands", "stdout cli-ok")
             .expect("save page");
 
-        let messages = build_prompt_messages("cli-ok", Some(&wiki));
+        let settings = settings();
+        let messages = build_prompt_messages("cli-ok", &settings, Some(&wiki));
 
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, codesmith_core::ChatRole::System);
-        assert!(messages[0].content.contains("Command: printf cli-ok"));
-        assert_eq!(messages[1].role, codesmith_core::ChatRole::User);
-        assert_eq!(messages[1].content, "cli-ok");
+        assert!(messages[0].content.contains("execution-only"));
+        assert_eq!(messages[1].role, codesmith_core::ChatRole::System);
+        assert!(messages[1].content.contains("Command: printf cli-ok"));
+        assert_eq!(messages[2].role, codesmith_core::ChatRole::User);
+        assert_eq!(messages[2].content, "cli-ok");
     }
 
     #[test]
@@ -714,14 +905,17 @@ mod tests {
         wiki.save_page("Command: printf cli-ok", "commands", "stdout cli-ok")
             .expect("save page");
 
-        let messages = build_prompt_messages("unmatched", Some(&wiki));
+        let settings = settings();
+        let messages = build_prompt_messages("unmatched", &settings, Some(&wiki));
 
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, codesmith_core::ChatRole::System);
-        assert!(messages[0].content.contains("Relevant local wiki context"));
-        assert!(messages[0].content.contains("# CodeSmith Wiki Index"));
-        assert_eq!(messages[1].role, codesmith_core::ChatRole::User);
-        assert_eq!(messages[1].content, "unmatched");
+        assert!(messages[0].content.contains("execution-only"));
+        assert_eq!(messages[1].role, codesmith_core::ChatRole::System);
+        assert!(messages[1].content.contains("Relevant local wiki context"));
+        assert!(messages[1].content.contains("# CodeSmith Wiki Index"));
+        assert_eq!(messages[2].role, codesmith_core::ChatRole::User);
+        assert_eq!(messages[2].content, "unmatched");
     }
 
     #[test]
@@ -760,6 +954,12 @@ mod tests {
         assert_eq!(parse_repl_line("/lint wiki"), ReplCommand::LintWiki);
         assert_eq!(parse_repl_line("/log recent"), ReplCommand::LogRecent);
         assert_eq!(parse_repl_line("/sources"), ReplCommand::Sources);
+        assert_eq!(parse_repl_line("/models"), ReplCommand::Models);
+        assert_eq!(parse_repl_line("/model show"), ReplCommand::ModelShow);
+        assert_eq!(
+            parse_repl_line("/model use qwen35-opus"),
+            ReplCommand::ModelUse("qwen35-opus".to_string())
+        );
         assert_eq!(
             parse_repl_line("/wiki search cu-run-ok"),
             ReplCommand::WikiSearch("cu-run-ok".to_string())
@@ -842,12 +1042,45 @@ mod tests {
             ChatMessage::new(ChatRole::Assistant, "second".to_string()),
         ];
 
-        let messages = build_conversation_messages("third", &history, None);
+        let settings = settings();
+        let messages = build_conversation_messages("third", &history, &settings, None);
 
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0].content, "first");
-        assert_eq!(messages[1].content, "second");
-        assert_eq!(messages[2].content, "third");
+        assert_eq!(messages.len(), 4);
+        assert!(messages[0].content.contains("execution-only"));
+        assert_eq!(messages[1].content, "first");
+        assert_eq!(messages[2].content, "second");
+        assert_eq!(messages[3].content, "third");
+    }
+
+    #[test]
+    fn model_profile_helpers_add_switch_and_show_profiles() {
+        let mut settings = settings();
+
+        let added = add_local_model_profile(
+            &mut settings,
+            "qwen35-opus",
+            BackendKind::Ollama,
+            "http://localhost:11434/v1",
+            "gag0/qwen35-opus-distil:27b",
+            Some("Qwen 35 Opus Distil"),
+        )
+        .expect("add profile");
+        let switched = use_model_profile(&mut settings, "qwen35-opus").expect("switch profile");
+        let profiles = model_profiles_output(&settings);
+        let active = active_model_profile_output(&settings);
+
+        assert!(added.contains("qwen35-opus"));
+        assert!(switched.contains("qwen35-opus"));
+        assert!(profiles.contains("* qwen35-opus"));
+        assert!(active.contains("gag0/qwen35-opus-distil:27b"));
+        assert_eq!(settings.llm_model, "gag0/qwen35-opus-distil:27b");
+        assert!(
+            settings
+                .active_model_profile()
+                .expect("active profile")
+                .system_prompt
+                .contains("Do not use Markdown fences")
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(settings: AppSettings) -> Self {
+        let mut settings = settings;
+        settings.ensure_model_profiles();
         Self {
             settings,
             http: reqwest::Client::new(),
@@ -17,13 +19,18 @@ impl OpenAiClient {
     }
 
     pub async fn stream_chat(&self, messages: &[ChatMessage]) -> Result<Vec<String>> {
+        let profile = self
+            .settings
+            .active_model_profile()
+            .context("active model profile is missing")?;
         let url = format!(
             "{}/chat/completions",
-            self.settings.llm_base_url.trim_end_matches('/')
+            profile.base_url.trim_end_matches('/')
         );
         let request = ChatCompletionRequest {
-            model: self.settings.llm_model.clone(),
+            model: profile.model.clone(),
             stream: true,
+            temperature: profile.temperature,
             messages: messages
                 .iter()
                 .map(|message| OpenAiMessage {
@@ -34,12 +41,7 @@ impl OpenAiClient {
         };
 
         let mut builder = self.http.post(url).json(&request);
-        if let Some(api_key) = self
-            .settings
-            .api_key
-            .as_deref()
-            .filter(|key| !key.is_empty())
-        {
+        if let Some(api_key) = profile.api_key.as_deref().filter(|key| !key.is_empty()) {
             builder = builder.bearer_auth(api_key);
         }
         let response = builder.send().await?.error_for_status()?;
@@ -67,10 +69,11 @@ impl OpenAiClient {
     }
 
     pub async fn test_connection(&self) -> Result<()> {
-        let url = format!(
-            "{}/models",
-            self.settings.llm_base_url.trim_end_matches('/')
-        );
+        let profile = self
+            .settings
+            .active_model_profile()
+            .context("active model profile is missing")?;
+        let url = format!("{}/models", profile.base_url.trim_end_matches('/'));
         let response = self
             .http
             .get(url)
@@ -79,14 +82,10 @@ impl OpenAiClient {
             .error_for_status()?
             .json::<ModelsResponse>()
             .await?;
-        if !response
-            .data
-            .iter()
-            .any(|model| model.id == self.settings.llm_model)
-        {
+        if !response.data.iter().any(|model| model.id == profile.model) {
             anyhow::bail!(
-                "configured model '{}' was not found in local Ollama models",
-                self.settings.llm_model
+                "configured model '{}' was not found at the configured endpoint",
+                profile.model
             );
         }
         Ok(())
@@ -97,6 +96,8 @@ impl OpenAiClient {
 struct ChatCompletionRequest {
     model: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     messages: Vec<OpenAiMessage>,
 }
 
@@ -172,13 +173,21 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = OpenAiClient::new(AppSettings {
+        let mut settings = AppSettings {
             llm_base_url: format!("{}/v1", server.uri()),
             llm_model: "local-model".to_string(),
             api_key: None,
             default_workspace: PathBuf::from("."),
             command_timeout_secs: 120,
-        });
+            ..Default::default()
+        };
+        settings.model_profiles = vec![codesmith_core::ModelProfile::from_legacy(
+            "default",
+            settings.llm_base_url.clone(),
+            settings.llm_model.clone(),
+            settings.api_key.clone(),
+        )];
+        let client = OpenAiClient::new(settings);
 
         let chunks = client
             .stream_chat(&[ChatMessage::new(ChatRole::User, "hi".to_string())])
@@ -199,13 +208,21 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = OpenAiClient::new(AppSettings {
+        let mut settings = AppSettings {
             llm_base_url: format!("{}/v1", server.uri()),
             llm_model: "qwen2.5-coder:7b".to_string(),
             api_key: None,
             default_workspace: PathBuf::from("."),
             command_timeout_secs: 120,
-        });
+            ..Default::default()
+        };
+        settings.model_profiles = vec![codesmith_core::ModelProfile::from_legacy(
+            "default",
+            settings.llm_base_url.clone(),
+            settings.llm_model.clone(),
+            settings.api_key.clone(),
+        )];
+        let client = OpenAiClient::new(settings);
 
         let error = client
             .test_connection()

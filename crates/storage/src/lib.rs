@@ -34,14 +34,18 @@ pub fn load_settings_from(path: &Path) -> Result<AppSettings> {
         return Ok(AppSettings::default());
     }
     let raw = fs::read_to_string(path)?;
-    Ok(toml::from_str(&raw)?)
+    let mut settings: AppSettings = toml::from_str(&raw)?;
+    settings.ensure_model_profiles();
+    Ok(settings)
 }
 
 pub fn save_settings_to(path: &Path, settings: &AppSettings) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, toml::to_string_pretty(settings)?)?;
+    let mut settings = settings.clone();
+    settings.ensure_model_profiles();
+    fs::write(path, toml::to_string_pretty(&settings)?)?;
     Ok(())
 }
 
@@ -234,18 +238,47 @@ mod tests {
     fn settings_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("settings.toml");
-        let settings = codesmith_core::AppSettings {
+        let mut settings = codesmith_core::AppSettings {
             llm_base_url: "http://localhost:11434/v1".to_string(),
             llm_model: "qwen2.5-coder:7b".to_string(),
             api_key: Some("ignored".to_string()),
             default_workspace: PathBuf::from("/tmp/project"),
             command_timeout_secs: 120,
+            ..Default::default()
         };
+        settings.model_profiles = vec![codesmith_core::ModelProfile::from_legacy(
+            "default",
+            settings.llm_base_url.clone(),
+            settings.llm_model.clone(),
+            settings.api_key.clone(),
+        )];
 
         save_settings_to(&path, &settings).expect("save settings");
         let loaded = load_settings_from(&path).expect("load settings");
 
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn legacy_settings_migrate_to_default_model_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+        fs::write(
+            &path,
+            r#"llm_base_url = "http://localhost:11434/v1"
+llm_model = "gemma4:e4b-mlx-bf16"
+default_workspace = "/Users/gim-yonghyeon/CodeSmith"
+command_timeout_secs = 120
+"#,
+        )
+        .expect("write legacy settings");
+
+        let loaded = load_settings_from(&path).expect("load legacy settings");
+
+        assert_eq!(loaded.active_profile, "default");
+        assert_eq!(loaded.model_profiles.len(), 1);
+        assert_eq!(loaded.model_profiles[0].model, "gemma4:e4b-mlx-bf16");
+        assert_eq!(loaded.llm_model, "gemma4:e4b-mlx-bf16");
     }
 
     #[test]
