@@ -1,6 +1,6 @@
 # CodeSmith v1 Dev Build Notes
 
-CodeSmith is a local-only Rust execution agent with a frozen egui shell and a CLI-first runtime. The current build connects to an OpenAI-compatible local LLM server, proposes shell commands as JSON, requires explicit approval for every command, streams stdout/stderr into the GUI/CLI, and persists settings, transcripts, command runs, source records, and wiki notes under `~/.codesmith`.
+CodeSmith is a local-only Rust execution agent with a CLI-only Rich REPL runtime on `main`. The archived egui shell is preserved on the `archive-gui-egui` branch. The current build connects to an OpenAI-compatible local LLM server, proposes shell commands as JSON, requires explicit approval for every command, streams stdout/stderr into the CLI, and persists settings, transcripts, command runs, source records, and wiki notes under `~/.codesmith`.
 
 ## Run
 
@@ -17,12 +17,6 @@ Default local LLM settings:
 
 For Ollama, pull or create the configured model first, then run `cargo run -p codesmith-cli -- doctor` to test the connection.
 
-The GUI remains available for legacy/manual smoke checks:
-
-```bash
-cargo run --release -p codesmith-app
-```
-
 ## CLI
 
 Interactive terminal mode:
@@ -35,6 +29,11 @@ Useful chat commands:
 
 ```text
 /help
+/tools
+/runs
+/last
+/retry
+/clear
 /prompts
 /settings
 /set model <name>
@@ -90,7 +89,7 @@ The LLM must return strict JSON when it wants to propose a command:
 
 Malformed JSON and non-proposal JSON are treated as normal assistant text. Commands never run before approval.
 
-The CLI layer also accepts a single fenced ` ```json ` command proposal because local models often wrap otherwise valid JSON in Markdown fences during interactive use.
+The CLI layer also accepts embedded and fenced command proposal JSON because local models often wrap otherwise valid JSON in prose or Markdown fences during interactive use.
 
 ## Safety Defaults
 
@@ -104,7 +103,6 @@ Before release, run:
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --release -p codesmith-app
 cargo build --release -p codesmith-cli
 ```
 

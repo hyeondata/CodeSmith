@@ -1,12 +1,14 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use codesmith_agent::AgentOutput;
-use codesmith_core::{ChatMessage, ChatRole};
+use codesmith_core::{ChatMessage, ChatRole, CommandProposal, CommandRun, CommandStatus};
 use codesmith_llm::OpenAiClient;
 use codesmith_storage::{Storage, load_settings, save_settings, settings_path};
 use codesmith_wiki::WikiStore;
-use std::io::{self, Write};
+use rustyline::{DefaultEditor, error::ReadlineError};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(Debug, Parser)]
 #[command(name = "codesmith-cli")]
@@ -115,6 +117,12 @@ enum ModelsCommand {
         #[arg(long)]
         name: Option<String>,
     },
+}
+
+#[derive(Default)]
+struct ReplState {
+    last_proposal: Option<CommandProposal>,
+    runs: Vec<CommandRun>,
 }
 
 #[tokio::main]
@@ -240,25 +248,26 @@ async fn run_chat() -> Result<()> {
     let root = codesmith_root();
     let wiki = WikiStore::open(&root).ok();
     let storage = Storage::open(&root).ok();
+    let session_id = storage
+        .as_ref()
+        .and_then(|store| store.create_session("CLI Chat").ok());
     let mut history = Vec::<ChatMessage>::new();
+    let mut repl_state = ReplState::default();
     ensure_workspace_trust(&root, &settings.default_workspace)?;
 
-    println!("CodeSmith interactive chat");
-    println!("Type /help for commands, /settings to view config, /exit to quit.");
-    print!(
-        "{}",
-        codesmith_cli::settings_summary(&settings, &settings_path())
-    );
+    print_chat_banner(&settings, wiki.as_ref(), session_id);
+
+    let mut editor = if io::stdin().is_terminal() {
+        Some(DefaultEditor::new()?)
+    } else {
+        None
+    };
 
     loop {
-        print!("codesmith> ");
-        io::stdout().flush()?;
-
-        let mut line = String::new();
-        if io::stdin().read_line(&mut line)? == 0 {
-            println!();
-            break;
-        }
+        let line = match read_repl_line(editor.as_mut())? {
+            Some(line) => line,
+            None => break,
+        };
 
         match codesmith_cli::parse_repl_line(&line) {
             codesmith_cli::ReplCommand::Empty => {}
@@ -351,6 +360,24 @@ async fn run_chat() -> Result<()> {
                     println!("storage unavailable");
                 }
             }
+            codesmith_cli::ReplCommand::Tools => print!("{}", codesmith_cli::tools_output()),
+            codesmith_cli::ReplCommand::Runs => print!("{}", runs_output(&repl_state)),
+            codesmith_cli::ReplCommand::Last => print!("{}", last_run_output(&repl_state)),
+            codesmith_cli::ReplCommand::Retry => {
+                retry_last_proposal(
+                    &settings,
+                    storage.as_ref(),
+                    session_id,
+                    &mut history,
+                    &mut repl_state,
+                )
+                .await?;
+            }
+            codesmith_cli::ReplCommand::Clear => {
+                history.clear();
+                repl_state = ReplState::default();
+                println!("chat history cleared");
+            }
             codesmith_cli::ReplCommand::WikiList => {
                 if let Some(wiki) = wiki.as_ref() {
                     print!("{}", codesmith_cli::wiki_list_output(wiki)?);
@@ -373,13 +400,161 @@ async fn run_chat() -> Result<()> {
             codesmith_cli::ReplCommand::Prompt(prompt) => {
                 let expanded_prompt =
                     codesmith_cli::expand_at_mentions(&prompt, &settings.default_workspace)?;
-                handle_interactive_prompt(&expanded_prompt, &settings, wiki.as_ref(), &mut history)
-                    .await?;
+                handle_interactive_prompt(
+                    &expanded_prompt,
+                    &settings,
+                    wiki.as_ref(),
+                    storage.as_ref(),
+                    session_id,
+                    &mut history,
+                    &mut repl_state,
+                )
+                .await?;
             }
         }
     }
 
     Ok(())
+}
+
+fn read_repl_line(editor: Option<&mut DefaultEditor>) -> Result<Option<String>> {
+    if let Some(editor) = editor {
+        match editor.readline("codesmith> ") {
+            Ok(line) => {
+                if !line.trim().is_empty() {
+                    let _ = editor.add_history_entry(line.as_str());
+                }
+                Ok(Some(line))
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("^C");
+                Ok(Some(String::new()))
+            }
+            Err(ReadlineError::Eof) => {
+                println!();
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    } else {
+        print!("codesmith> ");
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            Ok(None)
+        } else {
+            Ok(Some(line))
+        }
+    }
+}
+
+fn print_chat_banner(
+    settings: &codesmith_core::AppSettings,
+    wiki: Option<&WikiStore>,
+    session_id: Option<Uuid>,
+) {
+    let mut settings = settings.clone();
+    settings.ensure_model_profiles();
+    let profile = settings.active_model_profile();
+    println!("CodeSmith Rich REPL");
+    println!("Type /help for commands, /tools for tool policy, /exit to quit.");
+    println!(
+        "profile: {}  backend: {}  model: {}",
+        settings.active_profile,
+        profile
+            .map(|profile| profile.backend_kind.as_str())
+            .unwrap_or("missing"),
+        settings.llm_model
+    );
+    println!(
+        "workspace: {}  timeout: {}s  session: {}",
+        settings.default_workspace.display(),
+        settings.command_timeout_secs,
+        session_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "transient".to_string())
+    );
+    println!(
+        "wiki: {}  tools: approval-gated shell runner\n",
+        if wiki.is_some() {
+            "available"
+        } else {
+            "unavailable"
+        }
+    );
+}
+
+fn runs_output(state: &ReplState) -> String {
+    if state.runs.is_empty() {
+        return "Command runs\nnone\n".to_string();
+    }
+    let lines = state
+        .runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| {
+            format!(
+                "{}. {:?} exit {:?}  {}",
+                index + 1,
+                run.status,
+                run.exit_code,
+                compact_command(&run.proposal.command)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Command runs\n{lines}\n")
+}
+
+fn last_run_output(state: &ReplState) -> String {
+    let Some(run) = state.runs.last() else {
+        return "Last command run\nnone\n".to_string();
+    };
+    format!(
+        "Last command run\ncommand: {}\ncwd: {}\n{}",
+        run.proposal.command,
+        run.proposal.cwd.display(),
+        codesmith_cli::format_command_run(run)
+    )
+}
+
+fn compact_command(command: &str) -> String {
+    const LIMIT: usize = 80;
+    if command.chars().count() <= LIMIT {
+        return command.to_string();
+    }
+    let mut compact = command.chars().take(LIMIT - 1).collect::<String>();
+    compact.push('…');
+    compact
+}
+
+async fn retry_last_proposal(
+    settings: &codesmith_core::AppSettings,
+    storage: Option<&Storage>,
+    session_id: Option<Uuid>,
+    history: &mut Vec<ChatMessage>,
+    state: &mut ReplState,
+) -> Result<()> {
+    let Some(proposal) = state
+        .last_proposal
+        .clone()
+        .or_else(|| state.runs.last().map(|run| run.proposal.clone()))
+    else {
+        println!("no command proposal to retry");
+        return Ok(());
+    };
+    handle_command_proposal(
+        "Retry last command proposal.",
+        proposal,
+        settings,
+        storage,
+        session_id,
+        history,
+        state,
+    )
+    .await
 }
 
 fn ensure_workspace_trust(root: &std::path::Path, workspace: &std::path::Path) -> Result<()> {
@@ -405,7 +580,10 @@ async fn handle_interactive_prompt(
     prompt: &str,
     settings: &codesmith_core::AppSettings,
     wiki: Option<&WikiStore>,
+    storage: Option<&Storage>,
+    session_id: Option<Uuid>,
     history: &mut Vec<ChatMessage>,
+    state: &mut ReplState,
 ) -> Result<()> {
     println!("CodeSmith is generating a response...");
     let messages = codesmith_cli::build_conversation_messages(prompt, history, settings, wiki);
@@ -417,32 +595,124 @@ async fn handle_interactive_prompt(
     match codesmith_cli::parse_cli_agent_output(&output)? {
         AgentOutput::Text(text) => {
             println!("{text}");
-            history.push(ChatMessage::new(ChatRole::User, prompt.to_string()));
-            history.push(ChatMessage::new(ChatRole::Assistant, text));
+            push_message(
+                storage,
+                session_id,
+                history,
+                ChatRole::User,
+                prompt.to_string(),
+            );
+            push_message(storage, session_id, history, ChatRole::Assistant, text);
         }
         AgentOutput::Command(proposal) => {
-            print!(
-                "{}",
-                codesmith_cli::handle_proposal(proposal.clone(), settings, false).await?
-            );
-            print!("Approve this command? [y/N] ");
-            io::stdout().flush()?;
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
-                print!(
-                    "{}",
-                    codesmith_cli::handle_proposal(proposal, settings, true).await?
-                );
-            } else {
-                println!("rejected");
-            }
-            history.push(ChatMessage::new(ChatRole::User, prompt.to_string()));
-            history.push(ChatMessage::new(ChatRole::Assistant, output));
+            handle_command_proposal(
+                prompt, proposal, settings, storage, session_id, history, state,
+            )
+            .await?;
         }
     }
 
     Ok(())
+}
+
+async fn handle_command_proposal(
+    prompt: &str,
+    proposal: CommandProposal,
+    settings: &codesmith_core::AppSettings,
+    storage: Option<&Storage>,
+    session_id: Option<Uuid>,
+    history: &mut Vec<ChatMessage>,
+    state: &mut ReplState,
+) -> Result<()> {
+    let (proposal, decision) = codesmith_cli::policy_decision_for_proposal(proposal, settings);
+    state.last_proposal = Some(proposal.clone());
+    let preview = codesmith_cli::preview_proposal(proposal.clone(), settings, false);
+    print!("{preview}");
+
+    if !decision.allowed {
+        let run = CommandRun::new(
+            proposal,
+            CommandStatus::Blocked,
+            String::new(),
+            decision.reason,
+            None,
+        );
+        let command_result = codesmith_cli::format_command_run(&run);
+        state.runs.push(run);
+        push_message(
+            storage,
+            session_id,
+            history,
+            ChatRole::User,
+            prompt.to_string(),
+        );
+        push_message(
+            storage,
+            session_id,
+            history,
+            ChatRole::Assistant,
+            format!("Command blocked by policy.\n\nCommand execution result:\n{command_result}"),
+        );
+        return Ok(());
+    }
+
+    let approved = codesmith_cli::read_required_approval(io::stdin().lock(), io::stdout())?;
+    let command_result = if approved {
+        let run = codesmith_cli::run_approved_proposal(proposal, settings).await?;
+        let output = codesmith_cli::format_command_run(&run);
+        print!("{output}");
+        persist_run(storage, session_id, &run);
+        state.runs.push(run);
+        output
+    } else {
+        println!("rejected");
+        let run = CommandRun::new(
+            proposal,
+            CommandStatus::Rejected,
+            String::new(),
+            String::new(),
+            None,
+        );
+        let output = codesmith_cli::format_command_run(&run);
+        state.runs.push(run);
+        output
+    };
+
+    push_message(
+        storage,
+        session_id,
+        history,
+        ChatRole::User,
+        prompt.to_string(),
+    );
+    push_message(
+        storage,
+        session_id,
+        history,
+        ChatRole::Assistant,
+        format!("Command execution result:\n{command_result}"),
+    );
+    Ok(())
+}
+
+fn push_message(
+    storage: Option<&Storage>,
+    session_id: Option<Uuid>,
+    history: &mut Vec<ChatMessage>,
+    role: ChatRole,
+    content: String,
+) {
+    let message = ChatMessage::new(role, content);
+    if let (Some(storage), Some(session_id)) = (storage, session_id) {
+        let _ = storage.append_message(session_id, &message);
+    }
+    history.push(message);
+}
+
+fn persist_run(storage: Option<&Storage>, session_id: Option<Uuid>, run: &CommandRun) {
+    if let (Some(storage), Some(session_id)) = (storage, session_id) {
+        let _ = storage.insert_command_run(session_id, run);
+    }
 }
 
 fn codesmith_root() -> PathBuf {

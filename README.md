@@ -1,22 +1,19 @@
 # CodeSmith
 
-CodeSmith is an execution-only local agent built with Rust, a CLI-first runtime, and a frozen `egui` desktop shell.
-It connects to a local OpenAI-compatible LLM server, proposes shell commands, and runs only commands that the user explicitly approves.
+CodeSmith is a CLI-only, execution-only local coding agent built in Rust. It connects to a local OpenAI-compatible LLM endpoint, turns assistant output into command proposals, and runs only commands that the user explicitly approves.
 
-The current v1.1 direction is intentionally narrow: local CLI chat, command proposals, command approval, command execution logs, local wiki ingest/query/lint, settings, and persistence. It does not edit files automatically, commit or push Git changes, open PRs, run MCP tools, or execute remotely.
+The archived `egui` desktop shell is preserved on the pushed `archive-gui-egui` branch. `main` is now focused on `codesmith-cli`.
 
 ## Features
 
-- Native `eframe/egui` desktop app with a Codex-style three-panel layout.
-- Local OpenAI-compatible LLM client for Ollama, LM Studio, llama.cpp, llama-cpp-python, vLLM, and similar servers.
-- Default local endpoint: `http://localhost:11434/v1`.
-- Strict command proposal format with `command`, `cwd`, and `reason`.
-- Explicit approval before every command execution.
+- Rich REPL: `codesmith-cli chat` with history, arrow keys, backspace, slash commands, and local workspace trust.
+- Local model profiles for Ollama, vLLM, LiteLLM, and custom OpenAI-compatible endpoints.
+- Strict or embedded JSON command proposal parsing with `command`, `cwd`, and `reason`.
+- Explicit `y/n` approval before every allowed command execution.
 - Policy blocking for destructive, privileged, credential, exfiltration, and out-of-workspace commands.
-- Streaming stdout/stderr, exit status, timeout handling, and run logs.
+- Streaming stdout/stderr, exit status, timeout handling, run summaries, retry, and last-run inspection.
 - Local settings, SQLite metadata, JSONL transcripts, and Markdown wiki pages.
-- Interactive CLI mode with workspace trust, slash commands, recommended prompts, `@` context helpers, and CLI-first wiki ingest/query/lint/log commands.
-- Korean/CJK font fallback in the GUI.
+- Wiki ingest/query/lint/log/source commands and `@workspace` / `@file:` context helpers.
 
 ## Requirements
 
@@ -24,13 +21,13 @@ The current v1.1 direction is intentionally narrow: local CLI chat, command prop
 - Stable Rust toolchain pinned by `rust-toolchain.toml`.
 - A local OpenAI-compatible LLM server.
 
-For Ollama, start the app/server and make sure the configured model exists:
+For Ollama:
 
 ```bash
 ollama list
 ```
 
-The app currently reads settings from:
+Settings are read from:
 
 ```text
 ~/.codesmith/settings.toml
@@ -38,46 +35,27 @@ The app currently reads settings from:
 
 ## Quick Start
 
-From the repository root:
-
 ```bash
 cd /Users/gim-yonghyeon/CodeSmith
-cargo run -p codesmith-app
-```
-
-Build release binaries:
-
-```bash
-cargo build --release -p codesmith-app
-cargo build --release -p codesmith-cli
-```
-
-Run the desktop app:
-
-```bash
-./target/release/codesmith
-```
-
-Run the CLI:
-
-```bash
-./target/release/codesmith-cli doctor
-```
-
-## CLI Usage
-
-Start Claude Code-like interactive chat:
-
-```bash
 cargo run -p codesmith-cli -- chat
 ```
 
-On first use for a workspace, CodeSmith asks whether to trust that folder. Interactive LLM prompts and command approvals are only available after the workspace is trusted.
+Build the CLI:
 
-Interactive commands:
+```bash
+cargo build --release -p codesmith-cli
+./target/release/codesmith-cli doctor
+```
+
+## Rich REPL Commands
 
 ```text
 /help
+/tools
+/runs
+/last
+/retry
+/clear
 /prompts
 /settings
 /set base-url <url>
@@ -114,19 +92,20 @@ Explain @file:Cargo.toml
 Inspect @workspace and propose a read-only diagnostic command.
 ```
 
-One-shot local LLM prompt:
+One-shot prompt:
 
 ```bash
 cargo run -p codesmith-cli -- -p "Return exactly OK"
 ```
 
-Check local endpoint and model:
+Command proposal preview and approved execution:
 
 ```bash
-cargo run -p codesmith-cli -- doctor
+cargo run -p codesmith-cli -- proposal --json '{"command":"printf hello","cwd":"/Users/gim-yonghyeon/CodeSmith","reason":"test command"}'
+cargo run -p codesmith-cli -- proposal --yes --json '{"command":"printf hello","cwd":"/Users/gim-yonghyeon/CodeSmith","reason":"test command"}'
 ```
 
-Manage local model profiles:
+Model profiles:
 
 ```bash
 cargo run -p codesmith-cli -- models list
@@ -135,28 +114,7 @@ cargo run -p codesmith-cli -- models use qwen35-opus
 cargo run -p codesmith-cli -- models show
 ```
 
-Supported local backend kinds are `ollama`, `vllm`, `litellm`, and `openai_compatible`. CodeSmith still calls the OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints; the profile stores the backend label, base URL, model name, optional API key, temperature, context hint, and full model-specific system prompt.
-
-Preview a command proposal without running it:
-
-```bash
-cargo run -p codesmith-cli -- proposal --json '{"command":"printf hello","cwd":"/Users/gim-yonghyeon/CodeSmith","reason":"test command"}'
-```
-
-Approve and run an allowed command:
-
-```bash
-cargo run -p codesmith-cli -- proposal --yes --json '{"command":"printf hello","cwd":"/Users/gim-yonghyeon/CodeSmith","reason":"test command"}'
-```
-
-Inspect wiki pages:
-
-```bash
-cargo run -p codesmith-cli -- wiki list
-cargo run -p codesmith-cli -- wiki search hello
-```
-
-Ingest trusted workspace sources into the local wiki:
+Wiki commands:
 
 ```bash
 cargo run -p codesmith-cli -- ingest file Cargo.toml
@@ -165,41 +123,38 @@ cargo run -p codesmith-cli -- query "cargo workspace"
 cargo run -p codesmith-cli -- lint wiki
 cargo run -p codesmith-cli -- log recent
 cargo run -p codesmith-cli -- sources
+cargo run -p codesmith-cli -- wiki list
+cargo run -p codesmith-cli -- wiki search hello
 ```
 
 ## Safety Model
 
-CodeSmith v1 is execution-only.
+CodeSmith is execution-only.
 
 - Commands never run before explicit approval.
+- Approval requires an explicit `y` or `n`; Enter alone does not approve or reject.
 - Blocked commands cannot be approved.
 - Commands outside the configured workspace are blocked.
-- Common destructive and privileged patterns are blocked, including recursive deletion, `sudo`, recursive `chmod`/`chown`, disk formatting, credential reads, and suspicious exfiltration tools.
+- Common destructive and privileged patterns are blocked.
 - `@file:` context is limited to files inside the trusted workspace.
 
 ## Local Data
 
-CodeSmith stores local data under `~/.codesmith`:
-
 ```text
-settings.toml                 settings
-trusted-workspaces.txt        trusted CLI workspace paths
-codesmith.sqlite3             session and command metadata
-sessions/                     JSONL transcripts
-wiki/                         Markdown wiki pages
-raw/                          immutable source snapshots
-schema/                       wiki schema and policy notes
-index.md                      wiki navigation entrypoint
-log.md                        parseable operation log
-index/                        reserved compatibility directory
-logs/                         reserved compatibility directory
+~/.codesmith/settings.toml          settings
+~/.codesmith/trusted-workspaces.txt trusted CLI workspace paths
+~/.codesmith/codesmith.sqlite3      session and command metadata
+~/.codesmith/sessions/              JSONL transcripts
+~/.codesmith/wiki/                  Markdown wiki pages
+~/.codesmith/raw/                   source snapshots
+~/.codesmith/schema/                wiki schema notes
+~/.codesmith/index.md               wiki navigation
+~/.codesmith/log.md                 operation log
 ```
 
 ## Workspace Layout
 
 ```text
-crates/app       eframe app entry point
-crates/ui        egui UI, layout, approval panels, run logs
 crates/cli       interactive and headless CLI
 crates/core      shared data types and events
 crates/llm       OpenAI-compatible local LLM client
@@ -212,28 +167,18 @@ crates/wiki      local Markdown wiki and search
 
 ## Verification
 
-Run these before claiming a change is working:
-
 ```bash
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-```
-
-Build release targets:
-
-```bash
-cargo build --release -p codesmith-app
 cargo build --release -p codesmith-cli
 ```
 
 ## Documentation
 
-- Architecture and debugging notes: `docs/architecture.md`
-- Architecture and debugging notes (Korean): `docs/architecture.ko.md`
-- Versioning and release process: `docs/VERSIONING.md`
-- Versioning and release process (Korean): `docs/VERSIONING.ko.md`
-- Claude Code and Claurst CLI notes: `docs/research/claude-claurst-cli-notes.md`
-- CLI implementation plan: `docs/superpowers/plans/2026-04-25-codesmith-cli.md`
+- Architecture: `docs/architecture.md`
+- Architecture (Korean): `docs/architecture.ko.md`
+- Versioning: `docs/VERSIONING.md`
+- Versioning (Korean): `docs/VERSIONING.ko.md`
+- Research notes: `docs/research/claude-claurst-cli-notes.md`
 - Korean README: `README.ko.md`
-- Release notes (Korean): `docs/v1-release-notes.ko.md`

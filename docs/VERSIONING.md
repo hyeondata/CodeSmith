@@ -11,7 +11,7 @@ MAJOR.MINOR.PATCH
 ```
 
 - `MAJOR`: incompatible architecture, storage, CLI, or policy changes.
-- `MINOR`: new compatible features, UI flows, CLI commands, storage additions, or wiki capabilities.
+- `MINOR`: new compatible CLI commands, storage additions, or wiki capabilities.
 - `PATCH`: bug fixes, documentation updates, small UX fixes, and test-only changes.
 
 Current workspace version:
@@ -45,7 +45,6 @@ Before tagging a release:
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --release -p codesmith-app
 cargo build --release -p codesmith-cli
 ```
 
@@ -56,16 +55,13 @@ Also manually verify CLI-first flows:
 - Blocked commands cannot be approved.
 - CLI `doctor` reports the expected local LLM status.
 - CLI `chat` starts only after workspace trust.
-- `/prompts`, `/settings`, `/ingest file`, `/query`, `/lint wiki`, `/log recent`, `/sources`, `/wiki list`, and `/exit` work in CLI chat.
+- `/tools`, `/runs`, `/last`, `/retry`, `/clear`, `/prompts`, `/settings`, `/ingest file`, `/query`, `/lint wiki`, `/log recent`, `/sources`, `/wiki list`, and `/exit` work in CLI chat.
 - `@file:<path>` cannot escape the trusted workspace.
 - `codesmith-cli ingest file <path>` writes a raw snapshot, source metadata, `index.md`, and `log.md`.
 - `codesmith-cli ingest folder <path>` skips hidden/build/cache directories.
 - `codesmith-cli lint wiki` reports broken wikilinks and malformed frontmatter without mutating wiki pages.
 
-Legacy GUI smoke is manual:
-
-- GUI starts and shows the three-panel app layout.
-- Command proposals and run logs still render in the Activity panel.
+The archived GUI is preserved on the `archive-gui-egui` branch and is not part of the `main` release checklist.
 
 ## Release Notes
 

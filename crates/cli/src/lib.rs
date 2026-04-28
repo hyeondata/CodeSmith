@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use codesmith_agent::{AgentOutput, parse_agent_output};
 use codesmith_core::{
-    AppSettings, BackendKind, ChatMessage, ChatRole, CommandProposal, IngestJob, ModelProfile,
-    SourceStatus, default_system_prompt,
+    AppSettings, BackendKind, ChatMessage, ChatRole, CommandProposal, CommandRun, CommandStatus,
+    IngestJob, ModelProfile, PolicyDecision, SourceStatus, default_system_prompt,
 };
 use codesmith_llm::OpenAiClient;
 use codesmith_policy::evaluate;
@@ -10,12 +10,36 @@ use codesmith_runner::run_approved_command;
 use codesmith_storage::Storage;
 use codesmith_wiki::WikiStore;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub fn approval_hint() -> &'static str {
     "approval required: rerun with --yes to execute this allowed command"
+}
+
+pub fn read_required_approval<R: BufRead, W: Write>(
+    mut reader: R,
+    mut writer: W,
+) -> std::io::Result<bool> {
+    loop {
+        write!(writer, "Approve? type y or n: ")?;
+        writer.flush()?;
+
+        let mut answer = String::new();
+        if reader.read_line(&mut answer)? == 0 {
+            writeln!(writer, "rejected")?;
+            return Ok(false);
+        }
+
+        match answer.trim() {
+            "y" | "Y" | "yes" | "YES" => return Ok(true),
+            "n" | "N" | "no" | "NO" => return Ok(false),
+            _ => {
+                writeln!(writer, "Please type y or n.")?;
+            }
+        }
+    }
 }
 
 pub fn repl_help() -> &'static str {
@@ -40,6 +64,11 @@ pub fn repl_help() -> &'static str {
      /sources                  list ingested source records\n\
      /wiki list                list saved wiki pages\n\
      /wiki search <query>      search local wiki\n\
+     /tools                    show available tools and approval policy\n\
+     /runs                     show command runs from this chat\n\
+     /last                     show the last command result\n\
+     /retry                    retry the last command proposal\n\
+     /clear                    clear in-memory chat history\n\
      /exit                     quit\n"
 }
 
@@ -60,6 +89,11 @@ pub enum ReplCommand {
     LintWiki,
     LogRecent,
     Sources,
+    Tools,
+    Runs,
+    Last,
+    Retry,
+    Clear,
     WikiList,
     WikiSearch(String),
     Exit,
@@ -97,8 +131,22 @@ pub fn parse_repl_line(line: &str) -> ReplCommand {
         "/lint wiki" => ReplCommand::LintWiki,
         "/log recent" => ReplCommand::LogRecent,
         "/sources" | "/sources list" => ReplCommand::Sources,
+        "/tools" => ReplCommand::Tools,
+        "/runs" => ReplCommand::Runs,
+        "/last" => ReplCommand::Last,
+        "/retry" => ReplCommand::Retry,
+        "/clear" => ReplCommand::Clear,
         _ => parse_parameterized_repl_command(trimmed),
     }
+}
+
+pub fn tools_output() -> &'static str {
+    "CodeSmith tools\n\
+     - shell command proposals: approval required every time\n\
+     - runner: streams stdout/stderr and records exit status\n\
+     - policy: blocks destructive, privileged, credential, exfiltration, and outside-workspace commands\n\
+     - wiki: ingest, query, lint, sources, and operation log\n\
+     - model profiles: Ollama, vLLM, LiteLLM, and OpenAI-compatible local endpoints\n"
 }
 
 pub fn apply_setting_update(settings: &mut AppSettings, update: SettingUpdate) -> Result<String> {
@@ -594,40 +642,101 @@ pub fn wiki_search_output(wiki: &WikiStore, query: &str) -> Result<String> {
 }
 
 pub async fn handle_proposal(
-    proposal: CommandProposal,
+    mut proposal: CommandProposal,
     settings: &AppSettings,
     yes: bool,
 ) -> Result<String> {
+    proposal.cwd = resolve_proposal_cwd(&proposal.cwd, &settings.default_workspace);
+    let mut output = preview_proposal(proposal.clone(), settings, !yes);
     let decision = evaluate(&proposal, &settings.default_workspace);
-    let mut output = format!(
-        "Command proposal\ncommand: {}\ncwd: {}\nreason: {}\npolicy: {}\n",
-        proposal.command,
-        proposal.cwd.display(),
-        proposal.reason,
-        decision.reason
-    );
 
     if !decision.allowed {
-        output.push_str(&format!("blocked: {}\n", decision.reason));
         return Ok(output);
     }
 
     if !yes {
-        output.push_str(approval_hint());
-        output.push('\n');
         return Ok(output);
     }
 
-    let run = run_approved_command(
+    let run = run_approved_proposal(proposal, settings).await?;
+    output.push_str(&format_command_run(&run));
+    Ok(output)
+}
+
+pub fn preview_proposal(
+    mut proposal: CommandProposal,
+    settings: &AppSettings,
+    include_approval_hint: bool,
+) -> String {
+    proposal.cwd = resolve_proposal_cwd(&proposal.cwd, &settings.default_workspace);
+    let decision = evaluate(&proposal, &settings.default_workspace);
+    let mut output = format!(
+        "Command proposal\ncommand: {}\ncwd: {}\nreason: {}\npolicy: {}\nrisk: {:?}\napproval: {}\n",
+        proposal.command,
+        proposal.cwd.display(),
+        proposal.reason,
+        decision.reason,
+        decision.risk_level,
+        if decision.requires_approval {
+            "required"
+        } else {
+            "not required"
+        }
+    );
+    if !decision.allowed {
+        output.push_str(&format!("blocked: {}\n", decision.reason));
+    } else if include_approval_hint {
+        output.push_str(approval_hint());
+        output.push('\n');
+    }
+    output
+}
+
+pub fn policy_decision_for_proposal(
+    mut proposal: CommandProposal,
+    settings: &AppSettings,
+) -> (CommandProposal, PolicyDecision) {
+    proposal.cwd = resolve_proposal_cwd(&proposal.cwd, &settings.default_workspace);
+    let decision = evaluate(&proposal, &settings.default_workspace);
+    (proposal, decision)
+}
+
+pub async fn run_approved_proposal(
+    mut proposal: CommandProposal,
+    settings: &AppSettings,
+) -> Result<CommandRun> {
+    proposal.cwd = resolve_proposal_cwd(&proposal.cwd, &settings.default_workspace);
+    let decision = evaluate(&proposal, &settings.default_workspace);
+    if !decision.allowed {
+        return Ok(CommandRun::new(
+            proposal,
+            CommandStatus::Blocked,
+            String::new(),
+            decision.reason,
+            None,
+        ));
+    }
+
+    run_approved_command(
         proposal,
         Duration::from_secs(settings.command_timeout_secs.max(1)),
     )
-    .await?;
-    output.push_str(&format!(
+    .await
+}
+
+pub fn format_command_run(run: &CommandRun) -> String {
+    format!(
         "status: {:?}\nexit: {:?}\nstdout:\n{}\nstderr:\n{}\n",
         run.status, run.exit_code, run.stdout, run.stderr
-    ));
-    Ok(output)
+    )
+}
+
+fn resolve_proposal_cwd(cwd: &Path, workspace: &Path) -> PathBuf {
+    if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        workspace.join(cwd)
+    }
 }
 
 fn parse_command_proposal(json: &str) -> Result<CommandProposal> {
@@ -836,6 +945,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn approval_prompt_requires_explicit_yes_or_no() {
+        let input = b"\nmaybe\ny\n";
+        let mut output = Vec::new();
+
+        let approved = read_required_approval(&input[..], &mut output)
+            .expect("approval prompt should read a valid answer");
+
+        assert!(approved);
+        let output = String::from_utf8(output).expect("prompt output should be utf-8");
+        assert!(output.contains("Approve? type y or n: "));
+        assert_eq!(
+            output.matches("Please type y or n.").count(),
+            2,
+            "blank and invalid input should both be rejected with a retry"
+        );
+    }
+
+    #[test]
+    fn approval_prompt_accepts_explicit_no() {
+        let mut output = Vec::new();
+
+        let approved =
+            read_required_approval(&b"n\n"[..], &mut output).expect("explicit no should parse");
+
+        assert!(!approved);
+    }
+
     #[tokio::test]
     async fn safe_proposal_without_yes_requires_approval() {
         let output = handle_proposal_json(
@@ -877,6 +1014,21 @@ mod tests {
 
         assert!(output.contains("status: Succeeded"));
         assert!(output.contains("stdout:\ncli-ok"));
+    }
+
+    #[tokio::test]
+    async fn relative_proposal_cwd_resolves_inside_workspace() {
+        let output = handle_proposal_json(
+            r#"{"command":"printf relative-ok","cwd":".","reason":"test"}"#,
+            &settings(),
+            true,
+        )
+        .await
+        .expect("relative cwd should resolve inside workspace");
+
+        assert!(output.contains("cwd: /Users/gim-yonghyeon/CodeSmith"));
+        assert!(output.contains("status: Succeeded"));
+        assert!(output.contains("stdout:\nrelative-ok"));
     }
 
     #[test]
@@ -954,6 +1106,11 @@ mod tests {
         assert_eq!(parse_repl_line("/lint wiki"), ReplCommand::LintWiki);
         assert_eq!(parse_repl_line("/log recent"), ReplCommand::LogRecent);
         assert_eq!(parse_repl_line("/sources"), ReplCommand::Sources);
+        assert_eq!(parse_repl_line("/tools"), ReplCommand::Tools);
+        assert_eq!(parse_repl_line("/runs"), ReplCommand::Runs);
+        assert_eq!(parse_repl_line("/last"), ReplCommand::Last);
+        assert_eq!(parse_repl_line("/retry"), ReplCommand::Retry);
+        assert_eq!(parse_repl_line("/clear"), ReplCommand::Clear);
         assert_eq!(parse_repl_line("/models"), ReplCommand::Models);
         assert_eq!(parse_repl_line("/model show"), ReplCommand::ModelShow);
         assert_eq!(

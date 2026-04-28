@@ -1,6 +1,6 @@
 # CodeSmith v1 Dev Build Notes
 
-CodeSmith는 frozen egui shell과 CLI-first runtime을 가진 local-only Rust execution agent입니다. 현재 build는 OpenAI-compatible local LLM server에 연결하고, shell command를 JSON으로 제안하며, 모든 command에 명시적 approval을 요구합니다. stdout/stderr는 GUI/CLI에 streaming되고 settings, transcript, command run, source record, wiki note는 `~/.codesmith` 아래에 저장됩니다.
+CodeSmith는 `main`에서 CLI-only Rich REPL runtime을 가진 local-only Rust execution agent입니다. Archived egui shell은 `archive-gui-egui` branch에 보존되어 있습니다. 현재 build는 OpenAI-compatible local LLM server에 연결하고, shell command를 JSON으로 제안하며, 모든 command에 명시적 approval을 요구합니다. stdout/stderr는 CLI에 streaming되고 settings, transcript, command run, source record, wiki note는 `~/.codesmith` 아래에 저장됩니다.
 
 ## 실행
 
@@ -21,12 +21,6 @@ Ollama를 사용할 경우 먼저 configured model을 pull 또는 생성한 뒤 
 cargo run -p codesmith-cli -- doctor
 ```
 
-GUI는 legacy/manual smoke check 용도로 계속 사용할 수 있습니다.
-
-```bash
-cargo run --release -p codesmith-app
-```
-
 ## CLI
 
 대화형 terminal mode:
@@ -39,6 +33,11 @@ cargo run -p codesmith-cli -- chat
 
 ```text
 /help
+/tools
+/runs
+/last
+/retry
+/clear
 /prompts
 /settings
 /set model <name>
@@ -94,7 +93,7 @@ LLM이 command를 제안하려면 strict JSON을 반환해야 합니다.
 
 Malformed JSON과 non-proposal JSON은 일반 assistant text로 처리합니다. Command는 approval 전에 절대 실행되지 않습니다.
 
-CLI layer는 local model이 valid JSON을 Markdown fence로 감싸는 경우가 많아 single fenced ` ```json ` command proposal도 허용합니다.
+CLI layer는 local model이 valid JSON을 설명문이나 Markdown fence로 감싸는 경우가 많아 embedded/fenced command proposal도 허용합니다.
 
 ## Safety Defaults
 
@@ -108,7 +107,6 @@ Release 전에 다음을 실행합니다.
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --release -p codesmith-app
 cargo build --release -p codesmith-cli
 ```
 
