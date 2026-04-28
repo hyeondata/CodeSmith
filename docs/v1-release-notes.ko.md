@@ -65,6 +65,8 @@ CLI는 interactive LLM prompt 또는 command approval 전에 workspace trust를 
 
 CLI에는 Superpowers-style workflow command가 포함됩니다. `/plan`은 실행 전 intent와 verification을 정리하고, `/debug`는 root-cause investigation을 안내하며, `/verify`는 completion claim 전에 run evidence를 요약하고, `/review`는 failed/blocked evidence를 점검합니다.
 
+Wiki search는 match domain을 표시하고, query가 stderr/stdout evidence와 맞을 때 command/debugging evidence를 우선합니다. Query context는 source facts와 prior run evidence를 분리하고, 반복 검색은 process 안의 parsed page cache를 재사용합니다.
+
 Model profile command:
 
 ```bash

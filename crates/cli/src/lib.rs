@@ -734,7 +734,7 @@ pub fn wiki_search_output(wiki: &WikiStore, query: &str) -> Result<String> {
         "Wiki search: {query}\n{}\n",
         pages
             .into_iter()
-            .map(|page| format!("- {}", page.title))
+            .map(|page| format!("- [{}] {}", page.domain, page.title))
             .collect::<Vec<_>>()
             .join("\n")
     ))
@@ -1235,6 +1235,22 @@ mod tests {
 
         assert!(output.contains("Saved wiki pages"));
         assert!(output.contains("Command: printf cli-ok"));
+    }
+
+    #[test]
+    fn wiki_search_output_shows_page_domain_for_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wiki = codesmith_wiki::WikiStore::open(dir.path()).expect("open wiki");
+        wiki.save_page(
+            "Command run: Failed python",
+            "debugging",
+            "stderr permission denied",
+        )
+        .expect("save page");
+
+        let output = wiki_search_output(&wiki, "permission denied").expect("search wiki");
+
+        assert!(output.contains("- [debugging] Command run: Failed python"));
     }
 
     #[test]

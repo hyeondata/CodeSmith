@@ -168,6 +168,8 @@ CodeSmith is execution-only.
 ~/.codesmith/log.md                 operation log
 ```
 
+Wiki search is lightweight and local. Query context separates source facts from prior command/debugging evidence, and `wiki search` shows each match with its page domain. Repeated searches in the same process reuse an in-memory page cache that is invalidated on CodeSmith wiki writes. Source pages use workspace-relative titles plus a content hash to reduce duplicate titles.
+
 ## Workspace Layout
 
 ```text

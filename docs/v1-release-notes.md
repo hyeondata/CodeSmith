@@ -61,6 +61,8 @@ The CLI requires workspace trust before interactive LLM prompts or command appro
 
 The CLI includes Superpowers-style workflow commands. `/plan` shapes intent and verification before action, `/debug` guides root-cause investigation, `/verify` summarizes run evidence before completion claims, and `/review` highlights failed or blocked evidence.
 
+Wiki search now reports match domains, favors prior command/debugging evidence when queries match stderr/stdout evidence, keeps source facts separated from prior run evidence in query context, and reuses an in-process parsed page cache for repeated searches.
+
 Model profile commands:
 
 ```bash

@@ -5,10 +5,12 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use uuid::Uuid;
 
 pub struct WikiStore {
     root: PathBuf,
+    page_cache: RwLock<Option<Vec<WikiPage>>>,
 }
 
 impl WikiStore {
@@ -24,7 +26,10 @@ impl WikiStore {
             "# CodeSmith Wiki Index\n\nNo sources ingested yet.\n",
         )?;
         ensure_file(&root.join("log.md"), "# CodeSmith Operation Log\n\n")?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            page_cache: RwLock::new(None),
+        })
     }
 
     pub fn save_page(&self, title: &str, domain: &str, body: &str) -> Result<WikiPage> {
@@ -39,18 +44,13 @@ impl WikiStore {
         };
         let path = self.page_path(page.id);
         fs::write(path, render_page(&page))?;
+        self.invalidate_page_cache();
         Ok(page)
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<WikiPage>> {
         let mut scored = Vec::new();
-        for entry in fs::read_dir(self.root.join("wiki"))? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|ext| ext.to_str()) != Some("md") {
-                continue;
-            }
-            let raw = fs::read_to_string(entry.path())?;
-            let page = parse_page(&raw).context("parse wiki page")?;
+        for page in self.pages()? {
             let score = score_page(&page, query);
             if score > 0.0 {
                 scored.push((score, page));
@@ -65,6 +65,19 @@ impl WikiStore {
     }
 
     pub fn list_pages(&self) -> Result<Vec<WikiPage>> {
+        self.pages()
+    }
+
+    fn pages(&self) -> Result<Vec<WikiPage>> {
+        if let Some(pages) = self
+            .page_cache
+            .read()
+            .expect("wiki page cache lock")
+            .as_ref()
+        {
+            return Ok(pages.clone());
+        }
+
         let mut pages = Vec::new();
         for entry in fs::read_dir(self.root.join("wiki"))? {
             let entry = entry?;
@@ -75,7 +88,12 @@ impl WikiStore {
             pages.push(parse_page(&raw).context("parse wiki page")?);
         }
         pages.sort_by(|a, b| a.title.cmp(&b.title));
+        *self.page_cache.write().expect("wiki page cache lock") = Some(pages.clone());
         Ok(pages)
+    }
+
+    fn invalidate_page_cache(&self) {
+        *self.page_cache.write().expect("wiki page cache lock") = None;
     }
 
     pub fn ingest_file(
@@ -136,7 +154,7 @@ impl WikiStore {
             status: SourceStatus::Active,
         };
         self.append_source_record(&record)?;
-        self.save_source_summary_page(&record, &bytes)?;
+        self.save_source_summary_page(&workspace, &record, &bytes)?;
         self.rebuild_index()?;
         self.append_log(
             "ingest_file",
@@ -316,16 +334,23 @@ impl WikiStore {
         Ok(())
     }
 
-    fn save_source_summary_page(&self, record: &SourceRecord, bytes: &[u8]) -> Result<()> {
+    fn save_source_summary_page(
+        &self,
+        workspace: &Path,
+        record: &SourceRecord,
+        bytes: &[u8],
+    ) -> Result<()> {
         let preview = String::from_utf8_lossy(bytes);
         let preview = preview.chars().take(4000).collect::<String>();
+        let source_label = record
+            .path
+            .strip_prefix(workspace)
+            .unwrap_or(&record.path)
+            .display()
+            .to_string();
         let title = format!(
             "Source: {} ({})",
-            record
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("unknown"),
+            source_label,
             record.hash.chars().take(8).collect::<String>()
         );
         let body = format!(
@@ -462,15 +487,34 @@ fn append_context_section<'a>(
 
 fn score_page(page: &WikiPage, query: &str) -> f32 {
     let title = page.title.to_lowercase();
+    let body = page.body.to_lowercase();
     let haystack = format!("{} {} {}", page.title, page.domain, page.body).to_lowercase();
-    query
-        .split_whitespace()
-        .map(|term| {
-            let term = term.to_lowercase();
-            let title_bonus = if title.contains(&term) { 10.0 } else { 0.0 };
-            title_bonus + haystack.matches(&term).count() as f32
-        })
-        .sum()
+    let query = query.to_lowercase();
+    let exact_phrase_bonus = if query.split_whitespace().count() > 1 {
+        let title_bonus = if title.contains(&query) { 12.0 } else { 0.0 };
+        let body_bonus = if body.contains(&query) { 24.0 } else { 0.0 };
+        title_bonus + body_bonus
+    } else {
+        0.0
+    };
+    let evidence_bonus = if matches!(
+        page.domain.as_str(),
+        "command" | "commands" | "debugging" | "verification"
+    ) && query.split_whitespace().any(|term| body.contains(term))
+    {
+        30.0
+    } else {
+        0.0
+    };
+    exact_phrase_bonus
+        + evidence_bonus
+        + query
+            .split_whitespace()
+            .map(|term| {
+                let title_bonus = if title.contains(term) { 8.0 } else { 0.0 };
+                title_bonus + haystack.matches(term).count() as f32
+            })
+            .sum::<f32>()
 }
 
 fn ensure_file(path: &Path, contents: &str) -> Result<()> {
@@ -519,6 +563,7 @@ fn wikilinks(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn saves_loads_and_searches_pages() {
@@ -567,7 +612,9 @@ mod tests {
     fn ingest_file_copies_raw_writes_index_and_log_then_skips_same_hash() {
         let root = tempfile::tempdir().expect("root");
         let workspace = tempfile::tempdir().expect("workspace");
-        let source = workspace.path().join("notes.md");
+        let docs = workspace.path().join("docs");
+        fs::create_dir_all(&docs).expect("docs dir");
+        let source = docs.join("notes.md");
         fs::write(&source, "# Notes\nhello wiki").expect("write source");
         let wiki = WikiStore::open(root.path()).expect("open wiki");
 
@@ -588,6 +635,12 @@ mod tests {
             fs::read_to_string(root.path().join("log.md"))
                 .expect("log")
                 .contains("ingest_file")
+        );
+        assert!(
+            wiki.list_pages()
+                .expect("pages")
+                .iter()
+                .any(|page| page.title.starts_with("Source: docs/notes.md ("))
         );
     }
 
@@ -673,5 +726,100 @@ mod tests {
         assert!(context.contains("project facts"));
         assert!(context.contains("## Prior run evidence"));
         assert!(context.contains("SyntaxError evidence"));
+    }
+
+    #[test]
+    fn search_prioritizes_prior_run_evidence_over_reference_mentions() {
+        let root = tempfile::tempdir().expect("root");
+        let wiki = WikiStore::open(root.path()).expect("open wiki");
+        wiki.save_page(
+            "Source: permission denied troubleshooting guide",
+            "source",
+            "Reference notes mention permission and denied separately.",
+        )
+        .expect("save source");
+        wiki.save_page(
+            "Command run: Failed chmod",
+            "debugging",
+            "stderr: permission denied while opening config",
+        )
+        .expect("save evidence");
+
+        let pages = wiki.search("permission denied", 5).expect("search");
+
+        assert_eq!(pages[0].domain, "debugging");
+        assert_eq!(pages[0].title, "Command run: Failed chmod");
+    }
+
+    #[test]
+    fn search_cache_invalidates_after_saving_a_page() {
+        let root = tempfile::tempdir().expect("root");
+        let wiki = WikiStore::open(root.path()).expect("open wiki");
+        wiki.save_page("Initial", "source", "unrelated notes")
+            .expect("save initial");
+
+        assert!(
+            wiki.search("fresh evidence", 5)
+                .expect("first search")
+                .is_empty()
+        );
+
+        wiki.save_page("Fresh Evidence", "verification", "fresh evidence")
+            .expect("save fresh evidence");
+
+        let pages = wiki.search("fresh evidence", 5).expect("second search");
+        assert!(pages.iter().any(|page| page.title == "Fresh Evidence"));
+    }
+
+    #[test]
+    fn repeated_synthetic_search_p95_stays_under_100ms_and_hits_top5() {
+        for page_count in [100, 1000, 5000] {
+            let root = tempfile::tempdir().expect("root");
+            let wiki = WikiStore::open(root.path()).expect("open wiki");
+            let target_index = page_count * 7 / 10;
+            let target_title = format!("Synthetic page {target_index}");
+            for index in 0..page_count {
+                let domain = match index % 5 {
+                    0 => "source",
+                    1 => "command",
+                    2 => "debugging",
+                    3 => "plan",
+                    _ => "verification",
+                };
+                let body = if index == target_index {
+                    "stderr: synthetic needle evidence from python traceback"
+                } else {
+                    "general rust cargo workspace notes"
+                };
+                wiki.save_page(&format!("Synthetic page {index}"), domain, body)
+                    .expect("save page");
+            }
+
+            let warm_pages = wiki
+                .search("synthetic needle traceback", 5)
+                .expect("warm search");
+            assert!(warm_pages.iter().any(|page| page.title == target_title));
+
+            let mut durations = Vec::new();
+            let mut top_five_hit = false;
+            for _ in 0..20 {
+                let started = Instant::now();
+                let pages = wiki
+                    .search("synthetic needle traceback", 5)
+                    .expect("search synthetic");
+                durations.push(started.elapsed());
+                top_five_hit |= pages.iter().any(|page| page.title == target_title);
+            }
+            durations.sort();
+            let p95 = durations[durations.len() * 95 / 100];
+            let p50 = durations[durations.len() / 2];
+            eprintln!("synthetic wiki search pages={page_count} p50={p50:?} p95={p95:?}");
+
+            assert!(top_five_hit);
+            assert!(
+                p95 < Duration::from_millis(100),
+                "{page_count} page p95 query latency was {p95:?}"
+            );
+        }
     }
 }

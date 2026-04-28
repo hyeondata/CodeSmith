@@ -88,7 +88,7 @@ The deny policy covers recursive deletion, `sudo`, recursive ownership/permissio
 - Wiki navigation: `~/.codesmith/index.md`
 - Operation log: `~/.codesmith/log.md`
 
-Wiki pages use frontmatter `type`/`domain` values such as `source`, `command`, `debugging`, `plan`, and `verification`. Query context separates source facts from prior run evidence so the model can distinguish reference material from observed tool output.
+Wiki pages use frontmatter `type`/`domain` values such as `source`, `command`, `debugging`, `plan`, and `verification`. Query context separates source facts from prior run evidence so the model can distinguish reference material from observed tool output. Search uses title/domain/source-path boosts, exact phrase boosts, and evidence boosts for command/debugging pages. Repeated searches reuse an in-process parsed page cache, and wiki writes through CodeSmith invalidate that cache.
 
 ## PRD Fit
 

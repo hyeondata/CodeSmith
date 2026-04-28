@@ -86,7 +86,7 @@ deny policy는 recursive deletion, `sudo`, recursive ownership/permission change
 - Wiki navigation: `~/.codesmith/index.md`
 - Operation log: `~/.codesmith/log.md`
 
-Wiki page는 `source`, `command`, `debugging`, `plan`, `verification` 같은 `type`/`domain` frontmatter를 사용합니다. Query context는 source facts와 prior run evidence를 분리해 model이 reference material과 실제 tool output을 구분할 수 있게 합니다.
+Wiki page는 `source`, `command`, `debugging`, `plan`, `verification` 같은 `type`/`domain` frontmatter를 사용합니다. Query context는 source facts와 prior run evidence를 분리해 model이 reference material과 실제 tool output을 구분할 수 있게 합니다. Search는 title/domain/source-path boost, exact phrase boost, command/debugging evidence boost를 사용합니다. 반복 검색은 process 안의 parsed page cache를 재사용하고, CodeSmith를 통한 wiki write가 발생하면 cache를 무효화합니다.
 
 ## PRD Fit
 

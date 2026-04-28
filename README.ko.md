@@ -166,6 +166,8 @@ Workflow 명령:
 ~/.codesmith/log.md                 operation log
 ```
 
+Wiki search는 lightweight local search입니다. Query context는 source facts와 prior command/debugging evidence를 분리하고, `wiki search`는 각 match의 page domain을 함께 보여줍니다. 같은 process 안의 반복 검색은 in-memory page cache를 재사용하며, CodeSmith가 wiki를 쓸 때 cache를 무효화합니다. Source page title은 duplicate를 줄이기 위해 workspace-relative path와 content hash를 사용합니다.
+
 ## Workspace 구조
 
 ```text
