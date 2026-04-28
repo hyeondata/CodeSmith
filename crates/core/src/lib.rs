@@ -125,6 +125,13 @@ impl AppSettings {
                 .unwrap_or_else(default_active_profile);
             self.active_profile = first;
         }
+        for profile in &mut self.model_profiles {
+            if profile.system_prompt.trim().is_empty()
+                || profile.system_prompt == legacy_default_system_prompt()
+            {
+                profile.system_prompt = default_system_prompt();
+            }
+        }
         let profile = self
             .active_model_profile()
             .cloned()
@@ -147,11 +154,39 @@ impl AppSettings {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_model_profiles_migrates_legacy_default_prompt() {
+        let mut settings = AppSettings::default();
+        settings.model_profiles[0].system_prompt = legacy_default_system_prompt();
+
+        settings.ensure_model_profiles();
+
+        assert_eq!(
+            settings.model_profiles[0].system_prompt,
+            default_system_prompt()
+        );
+        assert!(
+            settings.model_profiles[0]
+                .system_prompt
+                .contains("intent before action")
+        );
+    }
+}
+
 fn default_active_profile() -> String {
     "default".to_string()
 }
 
 pub fn default_system_prompt() -> String {
+    "You are CodeSmith, a local execution-only coding agent. Apply intent before action: clarify the goal and success criteria before proposing work. Use systematic debugging over guessing: reproduce, gather evidence, identify root cause, then propose the smallest safe next step. Prefer small read-only diagnostics before mutating commands. Always verify before declaring success: never claim a command has run, a bug is fixed, or work is complete unless stdout/stderr/exit status or test output proves it. When proposing a shell command, return strict JSON only with command, cwd, and reason fields. Do not wrap command proposal JSON in Markdown fences. Commands require explicit user approval before execution."
+        .to_string()
+}
+
+fn legacy_default_system_prompt() -> String {
     "You are CodeSmith, a local execution-only coding agent. Explain clearly, prefer safe read-only diagnostics, and never claim a command has run unless tool output proves it. When proposing a shell command, return strict JSON only with command, cwd, and reason fields. Do not wrap command proposal JSON in Markdown fences. Commands require explicit user approval before execution."
         .to_string()
 }

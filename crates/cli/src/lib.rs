@@ -62,6 +62,10 @@ pub fn repl_help() -> &'static str {
      /lint wiki                check frontmatter, wikilinks, and duplicate titles\n\
      /log recent               show recent operation log entries\n\
      /sources                  list ingested source records\n\
+     /plan <goal>              shape goal, scope, risks, and verification before acting\n\
+     /debug <symptom>          use root-cause debugging before proposing fixes\n\
+     /verify                   summarize command evidence before completion claims\n\
+     /review                   review recent run risks and missing checks\n\
      /wiki list                list saved wiki pages\n\
      /wiki search <query>      search local wiki\n\
      /tools                    show available tools and approval policy\n\
@@ -89,6 +93,10 @@ pub enum ReplCommand {
     LintWiki,
     LogRecent,
     Sources,
+    Plan(String),
+    Debug(String),
+    Verify,
+    Review,
     Tools,
     Runs,
     Last,
@@ -131,6 +139,8 @@ pub fn parse_repl_line(line: &str) -> ReplCommand {
         "/lint wiki" => ReplCommand::LintWiki,
         "/log recent" => ReplCommand::LogRecent,
         "/sources" | "/sources list" => ReplCommand::Sources,
+        "/verify" => ReplCommand::Verify,
+        "/review" => ReplCommand::Review,
         "/tools" => ReplCommand::Tools,
         "/runs" => ReplCommand::Runs,
         "/last" => ReplCommand::Last,
@@ -146,6 +156,8 @@ pub fn tools_output() -> &'static str {
      - runner: streams stdout/stderr and records exit status\n\
      - policy: blocks destructive, privileged, credential, exfiltration, and outside-workspace commands\n\
      - wiki: ingest, query, lint, sources, and operation log\n\
+     - workflow: plan before implementing, debug before fixing, verify before completion claims\n\
+     - diagnostics: prefer small read-only commands before mutating commands\n\
      - model profiles: Ollama, vLLM, LiteLLM, and OpenAI-compatible local endpoints\n"
 }
 
@@ -239,6 +251,93 @@ pub fn recommended_prompts_output() -> &'static str {
      - Inspect @workspace and propose a read-only diagnostic command.\n\
      - Explain @file:Cargo.toml and list important dependencies.\n\
      - Search the local wiki for prior command patterns before answering.\n"
+}
+
+pub fn plan_workflow_prompt(goal: &str) -> String {
+    format!(
+        "Create a concise implementation plan for this goal before proposing any command: {goal}\n\
+         Include: goal, scope, success criteria, risks, smallest safe first steps, and verification commands. \
+         Do not claim anything is complete. If a command is needed, prefer a read-only diagnostic command proposal."
+    )
+}
+
+pub fn debug_workflow_prompt(symptom: &str) -> String {
+    format!(
+        "Use systematic debugging for this symptom: {symptom}\n\
+         Include: reproduction steps, observed evidence, likely root cause hypotheses, one minimal test, \
+         and the next safest diagnostic. Do not propose a fix until evidence supports the root cause."
+    )
+}
+
+pub fn verification_output(runs: &[CommandRun]) -> String {
+    let mut output = String::from("Verification\n");
+    if runs.is_empty() {
+        output.push_str("evidence: none\nstatus: not verified\n");
+        output.push_str("next: run a safe diagnostic or test command before claiming completion\n");
+        return output;
+    }
+    for (index, run) in runs.iter().enumerate() {
+        output.push_str(&format!(
+            "{}. {:?} exit {:?} command: {}\n",
+            index + 1,
+            run.status,
+            run.exit_code,
+            compact_command(&run.proposal.command)
+        ));
+        if !run.stdout.trim().is_empty() {
+            output.push_str(&format!("   stdout: {}\n", first_line(&run.stdout)));
+        }
+        if !run.stderr.trim().is_empty() {
+            output.push_str(&format!("   stderr: {}\n", first_line(&run.stderr)));
+        }
+    }
+    let last = runs.last().expect("runs is not empty");
+    match last.status {
+        CommandStatus::Succeeded => {
+            output.push_str("status: verified by latest successful command output\n");
+        }
+        CommandStatus::Failed | CommandStatus::TimedOut | CommandStatus::Blocked => {
+            output.push_str("status: not complete; latest evidence is failing or blocked\n");
+            output.push_str("next: inspect stderr/policy reason and run a smaller diagnostic\n");
+        }
+        CommandStatus::Rejected | CommandStatus::PendingApproval | CommandStatus::Running => {
+            output.push_str("status: not verified; command did not complete successfully\n");
+        }
+        CommandStatus::Cancelled => {
+            output.push_str("status: not verified; command was cancelled\n");
+        }
+    }
+    output
+}
+
+pub fn review_output(runs: &[CommandRun]) -> String {
+    let mut output = String::from("Review\n");
+    if runs.is_empty() {
+        output.push_str("- no command evidence yet\n");
+        output.push_str("- risk: completion claims would be unsupported\n");
+        return output;
+    }
+    let failed = runs
+        .iter()
+        .filter(|run| {
+            matches!(
+                run.status,
+                CommandStatus::Failed | CommandStatus::TimedOut | CommandStatus::Blocked
+            )
+        })
+        .count();
+    output.push_str(&format!("- command runs reviewed: {}\n", runs.len()));
+    output.push_str(&format!("- failed/blocked evidence: {failed}\n"));
+    if failed > 0 {
+        output.push_str(
+            "- next safe diagnostic: read stderr or policy reason before proposing a fix\n",
+        );
+    } else {
+        output.push_str(
+            "- next safe diagnostic: run the relevant test/check before completion claims\n",
+        );
+    }
+    output
 }
 
 pub fn add_local_model_profile(
@@ -731,12 +830,51 @@ pub fn format_command_run(run: &CommandRun) -> String {
     )
 }
 
+pub fn save_command_run_evidence(wiki: &WikiStore, run: &CommandRun, root_cause_note: &str) {
+    let domain = match run.status {
+        CommandStatus::Succeeded => "command",
+        CommandStatus::Failed | CommandStatus::TimedOut | CommandStatus::Blocked => "debugging",
+        _ => "verification",
+    };
+    let title = format!(
+        "Command run: {:?} {} ({})",
+        run.status,
+        compact_command(&run.proposal.command),
+        run.id
+    );
+    let body = format!(
+        "Command: `{}`\n\nCwd: `{}`\n\nStatus: `{:?}`\n\nExit: `{:?}`\n\nRoot cause note: {}\n\nStdout:\n```text\n{}\n```\n\nStderr:\n```text\n{}\n```",
+        run.proposal.command,
+        run.proposal.cwd.display(),
+        run.status,
+        run.exit_code,
+        root_cause_note,
+        run.stdout,
+        run.stderr
+    );
+    let _ = wiki.save_page(&title, domain, &body);
+}
+
 fn resolve_proposal_cwd(cwd: &Path, workspace: &Path) -> PathBuf {
     if cwd.is_absolute() {
         cwd.to_path_buf()
     } else {
         workspace.join(cwd)
     }
+}
+
+fn compact_command(command: &str) -> String {
+    const LIMIT: usize = 80;
+    if command.chars().count() <= LIMIT {
+        return command.to_string();
+    }
+    let mut compact = command.chars().take(LIMIT - 1).collect::<String>();
+    compact.push('…');
+    compact
+}
+
+fn first_line(value: &str) -> String {
+    value.lines().next().unwrap_or_default().to_string()
 }
 
 fn parse_command_proposal(json: &str) -> Result<CommandProposal> {
@@ -797,6 +935,22 @@ fn parse_parameterized_repl_command(trimmed: &str) -> ReplCommand {
             ReplCommand::Unknown(trimmed.to_string())
         } else {
             ReplCommand::Query(question.to_string())
+        };
+    }
+    if let Some(goal) = trimmed.strip_prefix("/plan ") {
+        let goal = goal.trim();
+        return if goal.is_empty() {
+            ReplCommand::Unknown(trimmed.to_string())
+        } else {
+            ReplCommand::Plan(goal.to_string())
+        };
+    }
+    if let Some(symptom) = trimmed.strip_prefix("/debug ") {
+        let symptom = symptom.trim();
+        return if symptom.is_empty() {
+            ReplCommand::Unknown(trimmed.to_string())
+        } else {
+            ReplCommand::Debug(symptom.to_string())
         };
     }
     if let Some(id) = trimmed.strip_prefix("/model use ") {
@@ -1106,6 +1260,16 @@ mod tests {
         assert_eq!(parse_repl_line("/lint wiki"), ReplCommand::LintWiki);
         assert_eq!(parse_repl_line("/log recent"), ReplCommand::LogRecent);
         assert_eq!(parse_repl_line("/sources"), ReplCommand::Sources);
+        assert_eq!(
+            parse_repl_line("/plan add safer tool workflow"),
+            ReplCommand::Plan("add safer tool workflow".to_string())
+        );
+        assert_eq!(
+            parse_repl_line("/debug python SyntaxError"),
+            ReplCommand::Debug("python SyntaxError".to_string())
+        );
+        assert_eq!(parse_repl_line("/verify"), ReplCommand::Verify);
+        assert_eq!(parse_repl_line("/review"), ReplCommand::Review);
         assert_eq!(parse_repl_line("/tools"), ReplCommand::Tools);
         assert_eq!(parse_repl_line("/runs"), ReplCommand::Runs);
         assert_eq!(parse_repl_line("/last"), ReplCommand::Last);
@@ -1207,6 +1371,84 @@ mod tests {
         assert_eq!(messages[1].content, "first");
         assert_eq!(messages[2].content, "second");
         assert_eq!(messages[3].content, "third");
+    }
+
+    #[test]
+    fn default_prompt_contains_superpowers_workflow_policy() {
+        let messages = build_conversation_messages("debug this", &[], &settings(), None);
+
+        let system = &messages[0].content;
+        assert!(system.contains("intent before action"));
+        assert!(system.contains("systematic debugging"));
+        assert!(system.contains("verify before declaring success"));
+    }
+
+    #[test]
+    fn tools_output_includes_superpowers_style_tool_policy() {
+        let output = tools_output();
+
+        assert!(output.contains("plan before implementing"));
+        assert!(output.contains("debug before fixing"));
+        assert!(output.contains("verify before completion claims"));
+        assert!(output.contains("read-only commands before mutating commands"));
+    }
+
+    #[test]
+    fn workflow_prompts_encode_plan_and_debug_shapes() {
+        let plan = plan_workflow_prompt("add a feature");
+        let debug = debug_workflow_prompt("python SyntaxError");
+
+        assert!(plan.contains("success criteria"));
+        assert!(plan.contains("verification commands"));
+        assert!(debug.contains("reproduction steps"));
+        assert!(debug.contains("root cause"));
+        assert!(debug.contains("next safest diagnostic"));
+    }
+
+    #[test]
+    fn verification_and_review_output_use_command_run_evidence() {
+        let failed = CommandRun::new(
+            CommandProposal::new(
+                "python3 broken.py",
+                PathBuf::from("/Users/gim-yonghyeon/CodeSmith"),
+                "test stderr",
+            ),
+            CommandStatus::Failed,
+            String::new(),
+            "SyntaxError: invalid syntax".to_string(),
+            Some(1),
+        );
+        let verified = verification_output(std::slice::from_ref(&failed));
+        let reviewed = review_output(&[failed]);
+
+        assert!(verified.contains("SyntaxError"));
+        assert!(verified.contains("not complete"));
+        assert!(reviewed.contains("failed/blocked evidence: 1"));
+        assert!(reviewed.contains("read stderr"));
+    }
+
+    #[test]
+    fn command_run_evidence_is_saved_as_debugging_wiki_page() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wiki = codesmith_wiki::WikiStore::open(dir.path()).expect("open wiki");
+        let failed = CommandRun::new(
+            CommandProposal::new(
+                "python3 broken.py",
+                PathBuf::from("/Users/gim-yonghyeon/CodeSmith"),
+                "test stderr",
+            ),
+            CommandStatus::Failed,
+            String::new(),
+            "SyntaxError: invalid syntax".to_string(),
+            Some(1),
+        );
+
+        save_command_run_evidence(&wiki, &failed, "stderr shows invalid syntax");
+        let pages = wiki.search("SyntaxError", 5).expect("search evidence");
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].domain, "debugging");
+        assert!(pages[0].body.contains("stderr shows invalid syntax"));
     }
 
     #[test]

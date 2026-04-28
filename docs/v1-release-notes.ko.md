@@ -52,12 +52,18 @@ cargo run -p codesmith-cli -- chat
 /lint wiki
 /log recent
 /sources
+/plan <goal>
+/debug <symptom>
+/verify
+/review
 /wiki list
 /wiki search <query>
 /exit
 ```
 
 CLI는 interactive LLM prompt 또는 command approval 전에 workspace trust를 요구합니다. `@workspace`와 workspace-scoped `@file:<path>` prompt context를 지원합니다.
+
+CLI에는 Superpowers-style workflow command가 포함됩니다. `/plan`은 실행 전 intent와 verification을 정리하고, `/debug`는 root-cause investigation을 안내하며, `/verify`는 completion claim 전에 run evidence를 요약하고, `/review`는 failed/blocked evidence를 점검합니다.
 
 Model profile command:
 

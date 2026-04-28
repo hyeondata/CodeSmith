@@ -48,12 +48,18 @@ Useful chat commands:
 /lint wiki
 /log recent
 /sources
+/plan <goal>
+/debug <symptom>
+/verify
+/review
 /wiki list
 /wiki search <query>
 /exit
 ```
 
 The CLI requires workspace trust before interactive LLM prompts or command approvals. It also supports `@workspace` and workspace-scoped `@file:<path>` prompt context.
+
+The CLI includes Superpowers-style workflow commands. `/plan` shapes intent and verification before action, `/debug` guides root-cause investigation, `/verify` summarizes run evidence before completion claims, and `/review` highlights failed or blocked evidence.
 
 Model profile commands:
 

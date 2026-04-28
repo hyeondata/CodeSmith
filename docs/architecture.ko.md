@@ -19,7 +19,7 @@
 2. `chat`은 interactive LLM prompt와 command approval 전에 workspace trust를 확인합니다.
 3. REPL은 `rustyline`으로 history, 방향키, backspace, Ctrl-C를 처리합니다.
 4. `@workspace`, workspace 내부 `@file:` context를 prompt에 붙입니다.
-5. Wiki context는 `index.md`와 matching page로 구성됩니다.
+5. Wiki context는 `index.md`, source facts, prior run evidence로 구성됩니다.
 6. active local model profile이 backend kind, base URL, model, optional API key, temperature, context hint, system prompt를 제공합니다.
 7. `llm`은 configured OpenAI-compatible local endpoint에서 streaming합니다.
 8. `agent`는 assistant 설명문 안에 섞인 command proposal JSON도 추출합니다.
@@ -27,8 +27,9 @@
 10. `policy`는 workspace 밖 명령과 destructive pattern을 차단합니다.
 11. allowed command는 명시적 `y` 또는 `n` 입력을 요구합니다. Enter만으로는 진행하지 않습니다.
 12. `runner`는 승인된 명령을 실행하고 stdout/stderr/status를 REPL에 반환합니다.
-13. command result는 chat history에 추가되어 후속 디버깅이 stderr/stdout을 참고할 수 있습니다.
-14. storage는 transcript, command run, source metadata, ingest job, wiki metadata를 저장합니다.
+13. command result는 chat history와 wiki evidence에 추가되어 후속 디버깅이 stderr/stdout을 참고할 수 있습니다.
+14. `/plan`, `/debug`, `/verify`, `/review`는 intent, root-cause investigation, evidence-based completion check 흐름을 안내합니다.
+15. storage는 transcript, command run, source metadata, ingest job, wiki metadata를 저장합니다.
 
 ## Rich REPL Surface
 
@@ -55,13 +56,17 @@
 /lint wiki
 /log recent
 /sources
+/plan <goal>
+/debug <symptom>
+/verify
+/review
 /doctor
 /wiki list
 /wiki search <query>
 /exit
 ```
 
-`/tools`는 tool surface와 approval policy를 보여줍니다. `/runs`, `/last`는 현재 REPL session의 command result를 보여줍니다. `/retry`는 마지막 proposal 또는 run proposal을 approval boundary로 다시 보냅니다. `/clear`는 in-memory REPL history만 초기화하며 persisted data는 삭제하지 않습니다.
+`/tools`는 tool surface, approval policy, planning/debugging/verification workflow를 보여줍니다. `/runs`, `/last`는 현재 REPL session의 command result를 보여줍니다. `/retry`는 마지막 proposal 또는 run proposal을 approval boundary로 다시 보냅니다. `/verify`는 completion claim 전에 command evidence를 요약하고, `/review`는 failed/blocked evidence를 점검합니다. `/clear`는 in-memory REPL history만 초기화하며 persisted data는 삭제하지 않습니다.
 
 ## Approval Boundary
 
@@ -81,6 +86,8 @@ deny policy는 recursive deletion, `sudo`, recursive ownership/permission change
 - Wiki navigation: `~/.codesmith/index.md`
 - Operation log: `~/.codesmith/log.md`
 
+Wiki page는 `source`, `command`, `debugging`, `plan`, `verification` 같은 `type`/`domain` frontmatter를 사용합니다. Query context는 source facts와 prior run evidence를 분리해 model이 reference material과 실제 tool output을 구분할 수 있게 합니다.
+
 ## PRD Fit
 
 구현됨:
@@ -90,6 +97,7 @@ deny policy는 recursive deletion, `sudo`, recursive ownership/permission change
 - explicit approval-gated shell execution.
 - command output capture, timeout handling, run summary, retry, last-run inspection.
 - workspace trust, `@workspace`, `@file:`, wiki ingest/query/lint/log/source workflow.
+- Superpowers-style planning, systematic debugging, review, verification workflow command.
 - SQLite metadata, JSONL transcript, Markdown wiki page.
 
 미구현:

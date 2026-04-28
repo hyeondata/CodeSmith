@@ -55,7 +55,7 @@ CLI-first flow도 수동 검증합니다.
 - Blocked command는 approve할 수 없음.
 - CLI `doctor`가 expected local LLM status를 보고함.
 - CLI `chat`이 workspace trust 후에만 시작됨.
-- `/tools`, `/runs`, `/last`, `/retry`, `/clear`, `/prompts`, `/settings`, `/ingest file`, `/query`, `/lint wiki`, `/log recent`, `/sources`, `/wiki list`, `/exit`가 CLI chat에서 동작함.
+- `/tools`, `/runs`, `/last`, `/retry`, `/clear`, `/plan`, `/debug`, `/verify`, `/review`, `/prompts`, `/settings`, `/ingest file`, `/query`, `/lint wiki`, `/log recent`, `/sources`, `/wiki list`, `/exit`가 CLI chat에서 동작함.
 - `@file:<path>`가 trusted workspace 밖으로 escape하지 못함.
 - `codesmith-cli ingest file <path>`가 raw snapshot, source metadata, `index.md`, `log.md`를 생성함.
 - `codesmith-cli ingest folder <path>`가 hidden/build/cache directory를 skip함.
