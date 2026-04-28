@@ -20,6 +20,7 @@ codesmith-runner = { path = "../runner" }
 codesmith-storage = { path = "../storage" }
 codesmith-wiki = { path = "../wiki" }
 dirs.workspace = true
+rustyline.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 

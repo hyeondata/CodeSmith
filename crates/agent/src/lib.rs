@@ -26,19 +26,36 @@ pub fn parse_agent_output(input: &str) -> Result<AgentOutput, AgentError> {
         return Err(AgentError::Empty);
     }
 
-    let Ok(wire) = serde_json::from_str::<CommandProposalWire>(input.trim()) else {
-        return Ok(AgentOutput::Text(input.to_string()));
-    };
-
-    if wire.command.trim().is_empty() {
-        return Ok(AgentOutput::Text(input.to_string()));
+    if let Some(proposal) = parse_command_proposal_wire(input.trim()) {
+        return Ok(AgentOutput::Command(proposal));
     }
 
-    Ok(AgentOutput::Command(CommandProposal::new(
-        wire.command,
-        wire.cwd,
-        wire.reason,
-    )))
+    for (index, _) in input.match_indices('{') {
+        if let Some(proposal) = parse_first_command_proposal_from(&input[index..]) {
+            return Ok(AgentOutput::Command(proposal));
+        }
+    }
+
+    Ok(AgentOutput::Text(input.to_string()))
+}
+
+fn parse_first_command_proposal_from(input: &str) -> Option<CommandProposal> {
+    let mut stream = serde_json::Deserializer::from_str(input).into_iter::<CommandProposalWire>();
+    stream.next()?.ok().and_then(command_proposal_from_wire)
+}
+
+fn parse_command_proposal_wire(input: &str) -> Option<CommandProposal> {
+    serde_json::from_str::<CommandProposalWire>(input)
+        .ok()
+        .and_then(command_proposal_from_wire)
+}
+
+fn command_proposal_from_wire(wire: CommandProposalWire) -> Option<CommandProposal> {
+    if wire.command.trim().is_empty() {
+        return None;
+    }
+
+    Some(CommandProposal::new(wire.command, wire.cwd, wire.reason))
 }
 
 #[cfg(test)]
@@ -75,5 +92,22 @@ mod tests {
         let input = r#"{"message":"hello"}"#;
         let parsed = parse_agent_output(input).expect("non proposal json should become text");
         assert_eq!(parsed, AgentOutput::Text(input.to_string()));
+    }
+
+    #[test]
+    fn parses_command_proposal_embedded_after_explanation() {
+        let input = r#"I will create the file first.
+
+{"command":"printf ok","cwd":".","reason":"create a smoke file"}"#;
+        let parsed = parse_agent_output(input).expect("embedded proposal should parse");
+
+        match parsed {
+            AgentOutput::Command(proposal) => {
+                assert_eq!(proposal.command, "printf ok");
+                assert_eq!(proposal.cwd.to_string_lossy(), ".");
+                assert_eq!(proposal.reason, "create a smoke file");
+            }
+            AgentOutput::Text(_) => panic!("expected embedded command proposal"),
+        }
     }
 }

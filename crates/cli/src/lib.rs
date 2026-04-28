@@ -10,12 +10,36 @@ use codesmith_runner::run_approved_command;
 use codesmith_storage::Storage;
 use codesmith_wiki::WikiStore;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub fn approval_hint() -> &'static str {
     "approval required: rerun with --yes to execute this allowed command"
+}
+
+pub fn read_required_approval<R: BufRead, W: Write>(
+    mut reader: R,
+    mut writer: W,
+) -> std::io::Result<bool> {
+    loop {
+        write!(writer, "Approve this command? Type y or n: ")?;
+        writer.flush()?;
+
+        let mut answer = String::new();
+        if reader.read_line(&mut answer)? == 0 {
+            writeln!(writer, "rejected")?;
+            return Ok(false);
+        }
+
+        match answer.trim() {
+            "y" | "Y" | "yes" | "YES" => return Ok(true),
+            "n" | "N" | "no" | "NO" => return Ok(false),
+            _ => {
+                writeln!(writer, "Please type y or n.")?;
+            }
+        }
+    }
 }
 
 pub fn repl_help() -> &'static str {
@@ -594,10 +618,11 @@ pub fn wiki_search_output(wiki: &WikiStore, query: &str) -> Result<String> {
 }
 
 pub async fn handle_proposal(
-    proposal: CommandProposal,
+    mut proposal: CommandProposal,
     settings: &AppSettings,
     yes: bool,
 ) -> Result<String> {
+    proposal.cwd = resolve_proposal_cwd(&proposal.cwd, &settings.default_workspace);
     let decision = evaluate(&proposal, &settings.default_workspace);
     let mut output = format!(
         "Command proposal\ncommand: {}\ncwd: {}\nreason: {}\npolicy: {}\n",
@@ -628,6 +653,14 @@ pub async fn handle_proposal(
         run.status, run.exit_code, run.stdout, run.stderr
     ));
     Ok(output)
+}
+
+fn resolve_proposal_cwd(cwd: &Path, workspace: &Path) -> PathBuf {
+    if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        workspace.join(cwd)
+    }
 }
 
 fn parse_command_proposal(json: &str) -> Result<CommandProposal> {
@@ -836,6 +869,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn approval_prompt_requires_explicit_yes_or_no() {
+        let input = b"\nmaybe\ny\n";
+        let mut output = Vec::new();
+
+        let approved = read_required_approval(&input[..], &mut output)
+            .expect("approval prompt should read a valid answer");
+
+        assert!(approved);
+        let output = String::from_utf8(output).expect("prompt output should be utf-8");
+        assert!(output.contains("Approve this command? Type y or n: "));
+        assert_eq!(
+            output.matches("Please type y or n.").count(),
+            2,
+            "blank and invalid input should both be rejected with a retry"
+        );
+    }
+
+    #[test]
+    fn approval_prompt_accepts_explicit_no() {
+        let mut output = Vec::new();
+
+        let approved =
+            read_required_approval(&b"n\n"[..], &mut output).expect("explicit no should parse");
+
+        assert!(!approved);
+    }
+
     #[tokio::test]
     async fn safe_proposal_without_yes_requires_approval() {
         let output = handle_proposal_json(
@@ -877,6 +938,21 @@ mod tests {
 
         assert!(output.contains("status: Succeeded"));
         assert!(output.contains("stdout:\ncli-ok"));
+    }
+
+    #[tokio::test]
+    async fn relative_proposal_cwd_resolves_inside_workspace() {
+        let output = handle_proposal_json(
+            r#"{"command":"printf relative-ok","cwd":".","reason":"test"}"#,
+            &settings(),
+            true,
+        )
+        .await
+        .expect("relative cwd should resolve inside workspace");
+
+        assert!(output.contains("cwd: /Users/gim-yonghyeon/CodeSmith"));
+        assert!(output.contains("status: Succeeded"));
+        assert!(output.contains("stdout:\nrelative-ok"));
     }
 
     #[test]

@@ -5,7 +5,8 @@ use codesmith_core::{ChatMessage, ChatRole};
 use codesmith_llm::OpenAiClient;
 use codesmith_storage::{Storage, load_settings, save_settings, settings_path};
 use codesmith_wiki::WikiStore;
-use std::io::{self, Write};
+use rustyline::{DefaultEditor, error::ReadlineError};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -250,15 +251,17 @@ async fn run_chat() -> Result<()> {
         codesmith_cli::settings_summary(&settings, &settings_path())
     );
 
-    loop {
-        print!("codesmith> ");
-        io::stdout().flush()?;
+    let mut editor = if io::stdin().is_terminal() {
+        Some(DefaultEditor::new()?)
+    } else {
+        None
+    };
 
-        let mut line = String::new();
-        if io::stdin().read_line(&mut line)? == 0 {
-            println!();
-            break;
-        }
+    loop {
+        let line = match read_repl_line(editor.as_mut())? {
+            Some(line) => line,
+            None => break,
+        };
 
         match codesmith_cli::parse_repl_line(&line) {
             codesmith_cli::ReplCommand::Empty => {}
@@ -382,6 +385,39 @@ async fn run_chat() -> Result<()> {
     Ok(())
 }
 
+fn read_repl_line(editor: Option<&mut DefaultEditor>) -> Result<Option<String>> {
+    if let Some(editor) = editor {
+        match editor.readline("codesmith> ") {
+            Ok(line) => {
+                if !line.trim().is_empty() {
+                    let _ = editor.add_history_entry(line.as_str());
+                }
+                Ok(Some(line))
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("^C");
+                Ok(Some(String::new()))
+            }
+            Err(ReadlineError::Eof) => {
+                println!();
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    } else {
+        print!("codesmith> ");
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            Ok(None)
+        } else {
+            Ok(Some(line))
+        }
+    }
+}
+
 fn ensure_workspace_trust(root: &std::path::Path, workspace: &std::path::Path) -> Result<()> {
     let trust_file = codesmith_cli::trusted_workspaces_path(root);
     if codesmith_cli::is_workspace_trusted(&trust_file, workspace)? {
@@ -421,24 +457,23 @@ async fn handle_interactive_prompt(
             history.push(ChatMessage::new(ChatRole::Assistant, text));
         }
         AgentOutput::Command(proposal) => {
-            print!(
-                "{}",
-                codesmith_cli::handle_proposal(proposal.clone(), settings, false).await?
-            );
-            print!("Approve this command? [y/N] ");
-            io::stdout().flush()?;
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
-                print!(
-                    "{}",
-                    codesmith_cli::handle_proposal(proposal, settings, true).await?
-                );
+            let preview = codesmith_cli::handle_proposal(proposal.clone(), settings, false).await?;
+            print!("{preview}");
+            let approved = codesmith_cli::read_required_approval(io::stdin().lock(), io::stdout())?;
+            let command_result = if approved {
+                let command_result =
+                    codesmith_cli::handle_proposal(proposal, settings, true).await?;
+                print!("{command_result}");
+                command_result
             } else {
                 println!("rejected");
-            }
+                "Command proposal rejected by user.\n".to_string()
+            };
             history.push(ChatMessage::new(ChatRole::User, prompt.to_string()));
-            history.push(ChatMessage::new(ChatRole::Assistant, output));
+            history.push(ChatMessage::new(
+                ChatRole::Assistant,
+                format!("{output}\n\nCommand execution result:\n{command_result}"),
+            ));
         }
     }
 

@@ -17,15 +17,17 @@ use uuid::Uuid;
 
 const CJK_FONT_NAME: &str = "codesmith_cjk_fallback";
 
-const BG: egui::Color32 = egui::Color32::from_rgb(14, 15, 17);
-const PANEL: egui::Color32 = egui::Color32::from_rgb(22, 24, 28);
-const PANEL_SOFT: egui::Color32 = egui::Color32::from_rgb(28, 31, 36);
-const BORDER: egui::Color32 = egui::Color32::from_rgb(50, 54, 61);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(229, 231, 235);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(156, 163, 175);
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(86, 156, 214);
-const SUCCESS: egui::Color32 = egui::Color32::from_rgb(71, 179, 128);
-const DANGER: egui::Color32 = egui::Color32::from_rgb(239, 98, 98);
+const BG: egui::Color32 = egui::Color32::from_rgb(10, 11, 13);
+const PANEL: egui::Color32 = egui::Color32::from_rgb(16, 18, 22);
+const PANEL_SOFT: egui::Color32 = egui::Color32::from_rgb(24, 27, 32);
+const PANEL_RAISED: egui::Color32 = egui::Color32::from_rgb(30, 34, 40);
+const BORDER: egui::Color32 = egui::Color32::from_rgb(48, 54, 63);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(232, 235, 240);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(145, 153, 166);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(88, 166, 255);
+const SUCCESS: egui::Color32 = egui::Color32::from_rgb(63, 185, 116);
+const DANGER: egui::Color32 = egui::Color32::from_rgb(255, 107, 107);
+const WARNING: egui::Color32 = egui::Color32::from_rgb(228, 179, 99);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tone {
@@ -250,7 +252,13 @@ impl CodeSmithApp {
             match event {
                 UiEvent::AssistantText(text) => {
                     match parse_agent_output(&text) {
-                        Ok(AgentOutput::Command(proposal)) => self.proposals.push(proposal),
+                        Ok(AgentOutput::Command(mut proposal)) => {
+                            proposal.cwd = resolve_proposal_cwd(
+                                &proposal.cwd,
+                                &self.settings.default_workspace,
+                            );
+                            self.proposals.push(proposal);
+                        }
                         Ok(AgentOutput::Text(text)) => {
                             let message = ChatMessage::new(ChatRole::Assistant, text);
                             self.persist_message(&message);
@@ -331,37 +339,41 @@ impl eframe::App for CodeSmithApp {
 
 impl CodeSmithApp {
     fn render_left_sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("codex_sidebar")
+        egui::SidePanel::left("claurst_sidebar")
             .resizable(true)
-            .default_width(272.0)
-            .width_range(232.0..=360.0)
+            .default_width(286.0)
+            .width_range(248.0..=380.0)
             .frame(panel_frame(PANEL))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 9.0);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("CodeSmith")
-                            .size(20.0)
+                            .size(21.0)
                             .strong()
                             .color(TEXT),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("local").color(SUCCESS).small());
+                        status_pill(ui, "LOCAL", SUCCESS);
                     });
                 });
-                ui.label(egui::RichText::new("Execution-only local agent").color(MUTED));
-                ui.add_space(10.0);
-                section_header(ui, "Sessions");
-                sidebar_item(ui, "Local Session", true);
-                ui.add_space(12.0);
-                section_header(ui, "Local LLM");
-                self.settings.ensure_model_profiles();
                 ui.label(
-                    egui::RichText::new(format!("Profile: {}", self.settings.active_profile))
+                    egui::RichText::new("terminal coding agent / execution only")
                         .color(MUTED)
                         .small(),
                 );
+                ui.add_space(12.0);
+                section_header(ui, "Session");
+                sidebar_item(ui, "main  /  local workspace", true);
+                sidebar_item(ui, "approval-gated tools", false);
+                sidebar_item(ui, "wiki memory enabled", false);
+
+                ui.add_space(12.0);
+                section_header(ui, "Model");
+                self.settings.ensure_model_profiles();
+                key_value_line(ui, "profile", &self.settings.active_profile);
+                key_value_line(ui, "backend", active_backend_label(&self.settings));
                 field_label(ui, "Base URL");
                 let mut base_url = self.settings.llm_base_url.clone();
                 if ui.text_edit_singleline(&mut base_url).changed() {
@@ -411,24 +423,33 @@ impl CodeSmithApp {
                         self.test_connection(ctx.clone());
                     }
                 });
+                ui.add_space(12.0);
+                section_header(ui, "Commands");
+                command_hint(ui, "/settings", "show runtime settings");
+                command_hint(ui, "/models", "list local model profiles");
+                command_hint(ui, "/wiki search", "search local memory");
+                command_hint(ui, "JSON proposal", "approve before execution");
             });
     }
 
     fn render_right_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("codex_activity")
+        egui::SidePanel::right("claurst_tools")
             .resizable(true)
-            .default_width(320.0)
-            .width_range(280.0..=460.0)
+            .default_width(356.0)
+            .width_range(300.0..=500.0)
             .frame(panel_frame(PANEL))
             .show(ctx, |ui| {
                 ui.add_space(8.0);
+                ui.label(egui::RichText::new("Tools").size(18.0).strong().color(TEXT));
                 ui.label(
-                    egui::RichText::new("Activity")
-                        .size(18.0)
-                        .strong()
-                        .color(TEXT),
+                    egui::RichText::new("approvals, command runs, and wiki context").color(MUTED),
                 );
-                ui.label(egui::RichText::new("Commands, runs, and wiki context").color(MUTED));
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    status_pill(ui, &format!("{} pending", self.proposals.len()), WARNING);
+                    status_pill(ui, &format!("{} runs", self.runs.len()), ACCENT);
+                    status_pill(ui, &format!("{} wiki", self.wiki_pages.len()), SUCCESS);
+                });
                 ui.add_space(12.0);
                 self.render_command_proposals(ui, ctx);
                 ui.add_space(12.0);
@@ -466,8 +487,19 @@ impl CodeSmithApp {
         }
         for (index, proposal) in self.proposals.iter().enumerate() {
             let decision = evaluate(proposal, &self.settings.default_workspace);
-            subtle_card(ui, |ui| {
-                ui.label(egui::RichText::new("Command").color(MUTED).small());
+            tool_card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    status_pill(
+                        ui,
+                        if decision.allowed {
+                            "APPROVAL"
+                        } else {
+                            "BLOCKED"
+                        },
+                        if decision.allowed { WARNING } else { DANGER },
+                    );
+                    ui.label(egui::RichText::new("shell command").color(MUTED).small());
+                });
                 code_block(ui, &proposal.command);
                 ui.label(
                     egui::RichText::new(format!("cwd {}", proposal.cwd.display())).color(MUTED),
@@ -508,8 +540,12 @@ impl CodeSmithApp {
         for (index, run) in self.runs.iter().enumerate() {
             let color = tone_color(status_tone(run.status));
             ui.collapsing(
-                egui::RichText::new(format!("{:?}  {}", run.status, run.proposal.command))
-                    .color(color),
+                egui::RichText::new(format!(
+                    "{:?}  {}",
+                    run.status,
+                    compact_command(&run.proposal.command)
+                ))
+                .color(color),
                 |ui| {
                     ui.label(egui::RichText::new(format!("exit {:?}", run.exit_code)).color(MUTED));
                     ui.label(egui::RichText::new("stdout").color(MUTED).small());
@@ -575,14 +611,18 @@ impl CodeSmithApp {
     }
 
     fn render_status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("codex_status")
+        egui::TopBottomPanel::bottom("claurst_status")
             .frame(panel_frame(BG))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Status").color(MUTED));
+                    status_pill(ui, "STATUS", ACCENT);
                     ui.label(egui::RichText::new(&self.status).monospace().color(TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(&self.settings.llm_model).color(MUTED));
+                        ui.label(
+                            egui::RichText::new(&self.settings.llm_model)
+                                .monospace()
+                                .color(MUTED),
+                        );
                     });
                 });
             });
@@ -592,15 +632,36 @@ impl CodeSmithApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(BG))
             .show(ctx, |ui| {
-                ui.vertical_centered_justified(|ui| {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("CodeSmith")
-                            .size(22.0)
-                            .strong()
-                            .color(TEXT),
-                    );
-                });
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("CodeSmith")
+                                    .size(19.0)
+                                    .strong()
+                                    .color(TEXT),
+                            );
+                            status_pill(ui, "CHAT", ACCENT);
+                            status_pill(ui, "NO AUTO-RUN", SUCCESS);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            self.settings.default_workspace.display().to_string(),
+                                        )
+                                        .monospace()
+                                        .small()
+                                        .color(MUTED),
+                                    );
+                                },
+                            );
+                        });
+                    });
                 ui.add_space(8.0);
                 let scroll_height = chat_scroll_height(ui.available_height());
                 egui::ScrollArea::vertical()
@@ -608,7 +669,7 @@ impl CodeSmithApp {
                     .max_height(scroll_height)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
-                        ui.set_max_width(760.0);
+                        ui.set_max_width(900.0);
                         for message in &self.messages {
                             message_row(ui, message);
                         }
@@ -651,6 +712,14 @@ fn take_proposal(proposals: &mut Vec<CommandProposal>, index: usize) -> Option<C
         Some(proposals.remove(index))
     } else {
         None
+    }
+}
+
+fn resolve_proposal_cwd(cwd: &Path, workspace: &Path) -> PathBuf {
+    if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        workspace.join(cwd)
     }
 }
 
@@ -726,13 +795,49 @@ fn field_label(ui: &mut egui::Ui, text: &str) {
 }
 
 fn sidebar_item(ui: &mut egui::Ui, text: &str, selected: bool) {
-    let fill = if selected { PANEL_SOFT } else { PANEL };
+    let fill = if selected { PANEL_RAISED } else { PANEL };
     egui::Frame::default()
         .fill(fill)
-        .corner_radius(6.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).color(TEXT));
+            ui.label(egui::RichText::new(text).monospace().color(TEXT));
+        });
+}
+
+fn key_value_line(ui: &mut egui::Ui, key: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(key).monospace().small().color(MUTED));
+        ui.label(egui::RichText::new(value).monospace().small().color(TEXT));
+    });
+}
+
+fn command_hint(ui: &mut egui::Ui, command: &str, description: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(command).monospace().color(ACCENT));
+        ui.label(egui::RichText::new(description).small().color(MUTED));
+    });
+}
+
+fn status_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    egui::Frame::default()
+        .fill(egui::Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            34,
+        ))
+        .stroke(egui::Stroke::new(1.0, color))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .monospace()
+                    .small()
+                    .strong()
+                    .color(color),
+            );
         });
 }
 
@@ -746,12 +851,22 @@ fn subtle_card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) ->
         .inner
 }
 
+fn tool_card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::default()
+        .fill(PANEL)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, add_contents)
+        .inner
+}
+
 fn code_block(ui: &mut egui::Ui, text: &str) {
     let body = if text.is_empty() { " " } else { text };
     egui::Frame::default()
-        .fill(egui::Color32::from_rgb(11, 12, 14))
+        .fill(egui::Color32::from_rgb(5, 6, 8))
         .stroke(egui::Stroke::new(1.0, BORDER))
-        .corner_radius(5.0)
+        .corner_radius(3.0)
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(body).monospace().color(TEXT));
@@ -764,19 +879,21 @@ fn message_row(ui: &mut egui::Ui, message: &ChatMessage) {
     egui::Frame::default()
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, if is_user { BORDER } else { BG }))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(12, 10))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(role_label(message.role))
-                    .small()
-                    .strong()
-                    .color(if is_user { ACCENT } else { SUCCESS }),
-            );
-            ui.add_space(3.0);
-            ui.label(egui::RichText::new(&message.content).color(TEXT));
+            ui.horizontal_top(|ui| {
+                ui.set_min_width(860.0);
+                ui.label(
+                    egui::RichText::new(format!("{} >", role_label(message.role).to_lowercase()))
+                        .monospace()
+                        .strong()
+                        .color(if is_user { ACCENT } else { SUCCESS }),
+                );
+                ui.label(egui::RichText::new(&message.content).color(TEXT));
+            });
         });
-    ui.add_space(8.0);
+    ui.add_space(6.0);
 }
 
 fn wait_indicator_row(ui: &mut egui::Ui, text: &str) {
@@ -799,22 +916,46 @@ fn composer(
     add_send: impl FnOnce(bool, &mut egui::Ui) -> bool,
 ) -> bool {
     let mut submitted = false;
-    subtle_card(ui, |ui| {
-        ui.horizontal(|ui| {
-            let response = ui.add_sized(
-                [(ui.available_width() - 74.0).max(160.0), 34.0],
-                egui::TextEdit::singleline(prompt)
-                    .hint_text("Ask CodeSmith to inspect or run a safe command"),
-            );
-            let prompt_empty = prompt.trim().is_empty();
-            if add_send(prompt_empty, ui)
-                || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
-            {
-                submitted = true;
-            }
+    egui::Frame::default()
+        .fill(PANEL)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(">").monospace().strong().color(SUCCESS));
+                let response = ui.add_sized(
+                    [(ui.available_width() - 80.0).max(160.0), 34.0],
+                    egui::TextEdit::singleline(prompt)
+                        .hint_text("ask, attach @file, or request a command proposal"),
+                );
+                let prompt_empty = prompt.trim().is_empty();
+                if add_send(prompt_empty, ui)
+                    || (response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                {
+                    submitted = true;
+                }
+            });
         });
-    });
     submitted
+}
+
+fn compact_command(command: &str) -> String {
+    const LIMIT: usize = 42;
+    if command.chars().count() <= LIMIT {
+        return command.to_string();
+    }
+    let mut compact = command.chars().take(LIMIT - 1).collect::<String>();
+    compact.push('…');
+    compact
+}
+
+fn active_backend_label(settings: &AppSettings) -> &str {
+    settings
+        .active_model_profile()
+        .map(|profile| profile.backend_kind.as_str())
+        .unwrap_or("missing")
 }
 
 fn install_cjk_fonts(ctx: &egui::Context) {
