@@ -159,13 +159,32 @@ impl WikiStore {
             context.push_str(&index);
             context.push_str("\n\n");
         }
-        for page in self.search(query, 5)? {
-            context.push_str(&format!("## {}\n{}\n\n", page.title, page.body));
-            if context.len() >= budget {
-                context.truncate(budget);
-                break;
-            }
-        }
+        let pages = self.search(query, 5)?;
+        append_context_section(
+            &mut context,
+            "Source facts",
+            pages.iter().filter(|page| page.domain == "source"),
+        );
+        append_context_section(
+            &mut context,
+            "Prior run evidence",
+            pages.iter().filter(|page| {
+                matches!(
+                    page.domain.as_str(),
+                    "command" | "commands" | "debugging" | "plan" | "verification"
+                )
+            }),
+        );
+        append_context_section(
+            &mut context,
+            "Other wiki context",
+            pages.iter().filter(|page| {
+                !matches!(
+                    page.domain.as_str(),
+                    "source" | "command" | "commands" | "debugging" | "plan" | "verification"
+                )
+            }),
+        );
         if context.len() > budget {
             context.truncate(budget);
         }
@@ -369,9 +388,10 @@ pub struct WikiLintIssue {
 
 fn render_page(page: &WikiPage) -> String {
     format!(
-        "---\nid: {}\ntitle: {}\ndomain: {}\nsource_count: {}\nconfidence: {}\nstatus: {:?}\n---\n{}",
+        "---\nid: {}\ntitle: {}\ntype: {}\ndomain: {}\nsource_count: {}\nconfidence: {}\nstatus: {:?}\n---\n{}",
         page.id,
         page.title,
+        page.domain,
         page.domain,
         page.source_count,
         page.confidence,
@@ -400,7 +420,7 @@ fn parse_page(raw: &str) -> Result<WikiPage> {
         match key.trim() {
             "id" => id = Some(Uuid::parse_str(value)?),
             "title" => title = Some(value.to_string()),
-            "domain" => domain = Some(value.to_string()),
+            "domain" | "type" => domain = Some(value.to_string()),
             "source_count" => source_count = value.parse()?,
             "confidence" => confidence = value.parse()?,
             "status" => {
@@ -423,6 +443,21 @@ fn parse_page(raw: &str) -> Result<WikiPage> {
         status,
         body,
     })
+}
+
+fn append_context_section<'a>(
+    context: &mut String,
+    heading: &str,
+    pages: impl Iterator<Item = &'a WikiPage>,
+) {
+    let pages = pages.collect::<Vec<_>>();
+    if pages.is_empty() {
+        return;
+    }
+    context.push_str(&format!("## {heading}\n"));
+    for page in pages {
+        context.push_str(&format!("### {}\n{}\n\n", page.title, page.body));
+    }
 }
 
 fn score_page(page: &WikiPage, query: &str) -> f32 {
@@ -605,5 +640,38 @@ mod tests {
         assert!(context.contains("# Index"));
         assert!(context.contains("Rust Notes"));
         assert!(context.len() <= 400);
+    }
+
+    #[test]
+    fn parses_type_frontmatter_as_wiki_page_domain() {
+        let raw = "---\nid: 00000000-0000-0000-0000-000000000001\ntitle: Debug Note\ntype: debugging\nsource_count: 1\nconfidence: 1\nstatus: Active\n---\nroot cause evidence";
+
+        let page = parse_page(raw).expect("parse page with type frontmatter");
+
+        assert_eq!(page.domain, "debugging");
+        assert!(page.body.contains("root cause evidence"));
+    }
+
+    #[test]
+    fn query_context_separates_source_facts_and_run_evidence() {
+        let root = tempfile::tempdir().expect("root");
+        let wiki = WikiStore::open(root.path()).expect("open wiki");
+        wiki.save_page("Source: README.md (abc12345)", "source", "project facts")
+            .expect("save source");
+        wiki.save_page(
+            "Command run: Failed python",
+            "debugging",
+            "SyntaxError evidence",
+        )
+        .expect("save debug");
+
+        let context = wiki
+            .query_context("python README SyntaxError", 1000)
+            .expect("query context");
+
+        assert!(context.contains("## Source facts"));
+        assert!(context.contains("project facts"));
+        assert!(context.contains("## Prior run evidence"));
+        assert!(context.contains("SyntaxError evidence"));
     }
 }

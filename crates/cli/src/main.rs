@@ -125,6 +125,14 @@ struct ReplState {
     runs: Vec<CommandRun>,
 }
 
+#[derive(Clone, Copy)]
+struct CommandContext<'a> {
+    settings: &'a codesmith_core::AppSettings,
+    wiki: Option<&'a WikiStore>,
+    storage: Option<&'a Storage>,
+    session_id: Option<Uuid>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -360,14 +368,49 @@ async fn run_chat() -> Result<()> {
                     println!("storage unavailable");
                 }
             }
+            codesmith_cli::ReplCommand::Plan(goal) => {
+                let prompt = codesmith_cli::plan_workflow_prompt(&goal);
+                handle_interactive_prompt(
+                    &prompt,
+                    &settings,
+                    wiki.as_ref(),
+                    storage.as_ref(),
+                    session_id,
+                    &mut history,
+                    &mut repl_state,
+                )
+                .await?;
+            }
+            codesmith_cli::ReplCommand::Debug(symptom) => {
+                let prompt = codesmith_cli::debug_workflow_prompt(&symptom);
+                handle_interactive_prompt(
+                    &prompt,
+                    &settings,
+                    wiki.as_ref(),
+                    storage.as_ref(),
+                    session_id,
+                    &mut history,
+                    &mut repl_state,
+                )
+                .await?;
+            }
+            codesmith_cli::ReplCommand::Verify => {
+                print!("{}", codesmith_cli::verification_output(&repl_state.runs));
+            }
+            codesmith_cli::ReplCommand::Review => {
+                print!("{}", codesmith_cli::review_output(&repl_state.runs));
+            }
             codesmith_cli::ReplCommand::Tools => print!("{}", codesmith_cli::tools_output()),
             codesmith_cli::ReplCommand::Runs => print!("{}", runs_output(&repl_state)),
             codesmith_cli::ReplCommand::Last => print!("{}", last_run_output(&repl_state)),
             codesmith_cli::ReplCommand::Retry => {
                 retry_last_proposal(
-                    &settings,
-                    storage.as_ref(),
-                    session_id,
+                    CommandContext {
+                        settings: &settings,
+                        wiki: wiki.as_ref(),
+                        storage: storage.as_ref(),
+                        session_id,
+                    },
                     &mut history,
                     &mut repl_state,
                 )
@@ -531,9 +574,7 @@ fn compact_command(command: &str) -> String {
 }
 
 async fn retry_last_proposal(
-    settings: &codesmith_core::AppSettings,
-    storage: Option<&Storage>,
-    session_id: Option<Uuid>,
+    context: CommandContext<'_>,
     history: &mut Vec<ChatMessage>,
     state: &mut ReplState,
 ) -> Result<()> {
@@ -548,9 +589,7 @@ async fn retry_last_proposal(
     handle_command_proposal(
         "Retry last command proposal.",
         proposal,
-        settings,
-        storage,
-        session_id,
+        context,
         history,
         state,
     )
@@ -605,10 +644,13 @@ async fn handle_interactive_prompt(
             push_message(storage, session_id, history, ChatRole::Assistant, text);
         }
         AgentOutput::Command(proposal) => {
-            handle_command_proposal(
-                prompt, proposal, settings, storage, session_id, history, state,
-            )
-            .await?;
+            let context = CommandContext {
+                settings,
+                wiki,
+                storage,
+                session_id,
+            };
+            handle_command_proposal(prompt, proposal, context, history, state).await?;
         }
     }
 
@@ -618,15 +660,14 @@ async fn handle_interactive_prompt(
 async fn handle_command_proposal(
     prompt: &str,
     proposal: CommandProposal,
-    settings: &codesmith_core::AppSettings,
-    storage: Option<&Storage>,
-    session_id: Option<Uuid>,
+    context: CommandContext<'_>,
     history: &mut Vec<ChatMessage>,
     state: &mut ReplState,
 ) -> Result<()> {
-    let (proposal, decision) = codesmith_cli::policy_decision_for_proposal(proposal, settings);
+    let (proposal, decision) =
+        codesmith_cli::policy_decision_for_proposal(proposal, context.settings);
     state.last_proposal = Some(proposal.clone());
-    let preview = codesmith_cli::preview_proposal(proposal.clone(), settings, false);
+    let preview = codesmith_cli::preview_proposal(proposal.clone(), context.settings, false);
     print!("{preview}");
 
     if !decision.allowed {
@@ -639,16 +680,24 @@ async fn handle_command_proposal(
         );
         let command_result = codesmith_cli::format_command_run(&run);
         state.runs.push(run);
+        if let Some(wiki) = context.wiki {
+            let run = state.runs.last().expect("blocked run was just pushed");
+            codesmith_cli::save_command_run_evidence(
+                wiki,
+                run,
+                "blocked by policy before approval",
+            );
+        }
         push_message(
-            storage,
-            session_id,
+            context.storage,
+            context.session_id,
             history,
             ChatRole::User,
             prompt.to_string(),
         );
         push_message(
-            storage,
-            session_id,
+            context.storage,
+            context.session_id,
             history,
             ChatRole::Assistant,
             format!("Command blocked by policy.\n\nCommand execution result:\n{command_result}"),
@@ -658,10 +707,17 @@ async fn handle_command_proposal(
 
     let approved = codesmith_cli::read_required_approval(io::stdin().lock(), io::stdout())?;
     let command_result = if approved {
-        let run = codesmith_cli::run_approved_proposal(proposal, settings).await?;
+        let run = codesmith_cli::run_approved_proposal(proposal, context.settings).await?;
         let output = codesmith_cli::format_command_run(&run);
         print!("{output}");
-        persist_run(storage, session_id, &run);
+        persist_run(context.storage, context.session_id, &run);
+        if let Some(wiki) = context.wiki {
+            codesmith_cli::save_command_run_evidence(
+                wiki,
+                &run,
+                "tool execution completed; inspect stdout, stderr, and exit status",
+            );
+        }
         state.runs.push(run);
         output
     } else {
@@ -674,20 +730,23 @@ async fn handle_command_proposal(
             None,
         );
         let output = codesmith_cli::format_command_run(&run);
+        if let Some(wiki) = context.wiki {
+            codesmith_cli::save_command_run_evidence(wiki, &run, "user rejected before execution");
+        }
         state.runs.push(run);
         output
     };
 
     push_message(
-        storage,
-        session_id,
+        context.storage,
+        context.session_id,
         history,
         ChatRole::User,
         prompt.to_string(),
     );
     push_message(
-        storage,
-        session_id,
+        context.storage,
+        context.session_id,
         history,
         ChatRole::Assistant,
         format!("Command execution result:\n{command_result}"),

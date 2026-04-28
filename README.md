@@ -14,6 +14,7 @@ The archived `egui` desktop shell is preserved on the pushed `archive-gui-egui` 
 - Streaming stdout/stderr, exit status, timeout handling, run summaries, retry, and last-run inspection.
 - Local settings, SQLite metadata, JSONL transcripts, and Markdown wiki pages.
 - Wiki ingest/query/lint/log/source commands and `@workspace` / `@file:` context helpers.
+- Superpowers-style workflow commands for planning, systematic debugging, verification, and review.
 
 ## Requirements
 
@@ -72,6 +73,10 @@ cargo build --release -p codesmith-cli
 /lint wiki
 /log recent
 /sources
+/plan <goal>
+/debug <symptom>
+/verify
+/review
 /doctor
 /wiki list
 /wiki search <query>
@@ -126,6 +131,17 @@ cargo run -p codesmith-cli -- sources
 cargo run -p codesmith-cli -- wiki list
 cargo run -p codesmith-cli -- wiki search hello
 ```
+
+Workflow commands:
+
+```text
+/plan add a safer diagnostic flow
+/debug python SyntaxError
+/verify
+/review
+```
+
+The default prompt favors intent before action, systematic debugging over guessing, read-only diagnostics before mutation, and evidence before completion claims.
 
 ## Safety Model
 

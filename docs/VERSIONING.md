@@ -55,7 +55,7 @@ Also manually verify CLI-first flows:
 - Blocked commands cannot be approved.
 - CLI `doctor` reports the expected local LLM status.
 - CLI `chat` starts only after workspace trust.
-- `/tools`, `/runs`, `/last`, `/retry`, `/clear`, `/prompts`, `/settings`, `/ingest file`, `/query`, `/lint wiki`, `/log recent`, `/sources`, `/wiki list`, and `/exit` work in CLI chat.
+- `/tools`, `/runs`, `/last`, `/retry`, `/clear`, `/plan`, `/debug`, `/verify`, `/review`, `/prompts`, `/settings`, `/ingest file`, `/query`, `/lint wiki`, `/log recent`, `/sources`, `/wiki list`, and `/exit` work in CLI chat.
 - `@file:<path>` cannot escape the trusted workspace.
 - `codesmith-cli ingest file <path>` writes a raw snapshot, source metadata, `index.md`, and `log.md`.
 - `codesmith-cli ingest folder <path>` skips hidden/build/cache directories.

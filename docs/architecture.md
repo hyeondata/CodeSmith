@@ -19,7 +19,7 @@ CodeSmith is now CLI-only on `main`. The archived `egui` desktop shell is preser
 2. `chat` verifies workspace trust before interactive LLM prompts or command approvals.
 3. The REPL uses `rustyline` for history, arrow keys, backspace, and Ctrl-C behavior.
 4. The CLI expands `@workspace` and workspace-scoped `@file:` prompt context.
-5. Wiki context is assembled from `index.md` and matching pages.
+5. Wiki context is assembled from `index.md`, source facts, and prior run evidence.
 6. The active local model profile supplies backend kind, base URL, model, optional API key, temperature, context hint, and system prompt.
 7. `llm` streams from the configured OpenAI-compatible local endpoint.
 8. `agent` extracts command proposal JSON even when surrounded by assistant prose.
@@ -27,8 +27,9 @@ CodeSmith is now CLI-only on `main`. The archived `egui` desktop shell is preser
 10. `policy` blocks commands outside the workspace or matching destructive patterns.
 11. Allowed commands require explicit `y` or `n`; Enter alone does not proceed.
 12. `runner` executes approved commands, captures stdout/stderr/status, and returns the result to the REPL.
-13. Command results are added to chat history so follow-up debugging can use prior stderr/stdout.
-14. Storage persists transcripts, command runs, source metadata, ingest jobs, and wiki metadata.
+13. Command results are added to chat history and saved as wiki evidence so follow-up debugging can use prior stderr/stdout.
+14. `/plan`, `/debug`, `/verify`, and `/review` guide the REPL through intent, root-cause investigation, and evidence-based completion checks.
+15. Storage persists transcripts, command runs, source metadata, ingest jobs, and wiki metadata.
 
 ## Rich REPL Surface
 
@@ -57,13 +58,17 @@ Interactive commands:
 /lint wiki
 /log recent
 /sources
+/plan <goal>
+/debug <symptom>
+/verify
+/review
 /doctor
 /wiki list
 /wiki search <query>
 /exit
 ```
 
-`/tools` explains available tool surfaces and approval policy. `/runs` and `/last` expose current REPL command results. `/retry` replays the last proposal or run proposal through the approval boundary. `/clear` clears only in-memory REPL history and does not delete persisted data.
+`/tools` explains available tool surfaces, approval policy, and the planning/debugging/verification workflow. `/runs` and `/last` expose current REPL command results. `/retry` replays the last proposal or run proposal through the approval boundary. `/verify` summarizes command evidence before completion claims, and `/review` highlights failed or blocked evidence. `/clear` clears only in-memory REPL history and does not delete persisted data.
 
 ## Approval Boundary
 
@@ -83,6 +88,8 @@ The deny policy covers recursive deletion, `sudo`, recursive ownership/permissio
 - Wiki navigation: `~/.codesmith/index.md`
 - Operation log: `~/.codesmith/log.md`
 
+Wiki pages use frontmatter `type`/`domain` values such as `source`, `command`, `debugging`, `plan`, and `verification`. Query context separates source facts from prior run evidence so the model can distinguish reference material from observed tool output.
+
 ## PRD Fit
 
 Implemented:
@@ -92,6 +99,7 @@ Implemented:
 - Explicit approval-gated shell execution.
 - Command output capture, timeout handling, run summaries, retry, and last-run inspection.
 - Workspace trust, `@workspace`, `@file:`, wiki ingest/query/lint/log/source workflows.
+- Superpowers-style planning, systematic debugging, review, and verification workflow commands.
 - SQLite metadata, JSONL transcripts, and Markdown wiki pages.
 
 Not implemented:
